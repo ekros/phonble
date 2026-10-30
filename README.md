@@ -1,4 +1,6 @@
-# Rsbuild project
+# Phonble 0.1
+
+Text shared between browsers on a trusted local network. One machine hosts the app and relay; every visitor sees the latest shared text.
 
 ## Setup
 
@@ -8,29 +10,27 @@ Install the dependencies:
 npm install
 ```
 
-## Get started
+## Development
 
-Start the dev server, and the app will be available at [http://localhost:3000](http://localhost:3000).
+Start the relay and Rsbuild together:
 
 ```bash
 npm run dev
 ```
 
-Build the app for production:
+Open the address printed by Rsbuild on the host, or open `http://<host-LAN-IP>:3000` from another computer on the same network. Allow incoming connections to the Rsbuild port through the host firewall. The relay uses port 3001 locally; Rsbuild proxies `/ws` to it.
+
+## Built app
+
+Build and serve the app and relay together:
 
 ```bash
 npm run build
+npm run start
 ```
 
-Preview the production build locally:
+Open `http://<host-LAN-IP>:3001` from each computer. Allow incoming connections to port 3001 through the host firewall. Set `PORT` to change this port (the development proxy still targets 3001).
 
-```bash
-npm run preview
-```
+Paste into the text box to share immediately, or type text and choose Share text. Use Copy on another device to take the received text. Clipboard access requires a user action; browsers cannot reliably monitor the system clipboard or grant automatic clipboard access to an HTTP LAN page. If Copy is blocked, select the displayed text and copy it manually.
 
-## Learn more
-
-To learn more about Rsbuild, check out the following resources:
-
-- [Rsbuild documentation](https://rsbuild.rs) - explore Rsbuild features and APIs.
-- [Rsbuild GitHub repository](https://github.com/web-infra-dev/rsbuild) - your feedback and contributions are welcome!
+Only one text value is stored, up to 60 KB. The latest update wins, and restarting the server clears it. There is no login or encryption on HTTP: anyone who can reach the host can read or replace the shared text. Use only on a trusted network; do not expose this prototype to the public internet.
