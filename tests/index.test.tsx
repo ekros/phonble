@@ -40,7 +40,10 @@ const originalWebSocket = globalThis.WebSocket;
 const renderConnected = async () => {
   render(<App />);
   await waitFor(() => expect(MockWebSocket.lastInstance).not.toBeNull());
-  act(() => MockWebSocket.lastInstance?.open());
+  act(() => {
+    MockWebSocket.lastInstance?.open();
+    MockWebSocket.lastInstance?.receive({ type: 'session', sessionId: 'abc-defg-hij' });
+  });
 };
 
 afterEach(() => {
@@ -58,6 +61,26 @@ test('renders a received image with a download link', async () => {
 
   expect(screen.getByRole('img', { name: 'Shared image' })).toHaveAttribute('src', 'data:image/png;base64,AQID');
   expect(screen.getByRole('link', { name: 'Download image' })).toHaveAttribute('download', 'shared-image.png');
+});
+
+test('creates a session and joins an existing session by ID', async () => {
+  Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: MockWebSocket });
+  render(<App />);
+  await waitFor(() => expect(MockWebSocket.lastInstance).not.toBeNull());
+  act(() => MockWebSocket.lastInstance?.open());
+
+  fireEvent.click(screen.getByRole('button', { name: 'Create session' }));
+  expect(MockWebSocket.lastInstance?.sent).toContain(JSON.stringify({ type: 'create-session' }));
+
+  act(() => MockWebSocket.lastInstance?.receive({ type: 'session', sessionId: 'abc-defg-hij' }));
+  expect(screen.getByText('abc-defg-hij')).toBeInTheDocument();
+  expect(window.localStorage.getItem('phonble-session-id')).toBe('abc-defg-hij');
+
+  fireEvent.click(screen.getByRole('button', { name: 'Leave session' }));
+  act(() => MockWebSocket.lastInstance?.receive({ type: 'session-left' }));
+  fireEvent.change(screen.getByLabelText('Session ID'), { target: { value: 'phone00001' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Join' }));
+  expect(MockWebSocket.lastInstance?.sent).toContain(JSON.stringify({ type: 'join-session', sessionId: 'pho-ne00-001' }));
 });
 
 test('sends an image selected with the file picker', async () => {

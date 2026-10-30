@@ -50,9 +50,10 @@ UI:
 
 ## 0.4 Multidevice
 
-- Devices can create a session or join one
+- Devices can create a session or join one (using session id)
 - Sessions are stored in server memory
-- Sessions have a short but secure alphanumeric value
+- Sessions have a short but secure alphanumeric id
+- Only participants of the same session can see each other
 
 ## 0.5 Phone participants
 

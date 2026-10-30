@@ -18,10 +18,32 @@ type SharedUpdate =
   | { type: 'image'; mimeType: string; data: string };
 type Participant = { id: string; name: string };
 type ParticipantUpdate = { type: 'participants'; deviceId: string; participants: Participant[] };
+type SessionUpdate =
+  | { type: 'session'; sessionId: string }
+  | { type: 'session-error'; message: string }
+  | { type: 'session-left' };
+
+const SESSION_STORAGE_KEY = 'phonble-session-id';
+const SESSION_ID_PATTERN = /^[a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{3}$/;
+
+const formatSessionIdInput = (value: string) => {
+  const characters = value.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10);
+  if (characters.length <= 3) return characters;
+  if (characters.length <= 7) return `${characters.slice(0, 3)}-${characters.slice(3)}`;
+  return `${characters.slice(0, 3)}-${characters.slice(3, 7)}-${characters.slice(7)}`;
+};
 
 const getStoredDeviceName = () => {
   try {
     return window.localStorage.getItem('phonble-device-name') ?? '';
+  } catch {
+    return '';
+  }
+};
+
+const getStoredSessionId = () => {
+  try {
+    return window.localStorage.getItem(SESSION_STORAGE_KEY) ?? '';
   } catch {
     return '';
   }
@@ -40,6 +62,14 @@ const isParticipantUpdate = (value: unknown): value is ParticipantUpdate => {
       typeof participant.name === 'string'
     )
   );
+};
+
+const isSessionUpdate = (value: unknown): value is SessionUpdate => {
+  if (!value || typeof value !== 'object') return false;
+  const update = value as Record<string, unknown>;
+  if (update.type === 'session') return typeof update.sessionId === 'string';
+  if (update.type === 'session-error') return typeof update.message === 'string';
+  return update.type === 'session-left';
 };
 
 const getBase64ByteLength = (data: string) => {
@@ -91,9 +121,13 @@ const App = () => {
   const [dragActive, setDragActive] = useState(false);
   const [deviceName, setDeviceName] = useState(getStoredDeviceName);
   const [nameDraft, setNameDraft] = useState(getStoredDeviceName);
+  const [sessionId, setSessionId] = useState('');
+  const [sessionDraft, setSessionDraft] = useState('');
+  const [sessionPending, setSessionPending] = useState(false);
   const [deviceId, setDeviceId] = useState('');
   const [participants, setParticipants] = useState<Participant[]>([]);
   const socketRef = useRef<WebSocket | null>(null);
+  const joiningStoredSessionRef = useRef(false);
   const draftBytes = new TextEncoder().encode(draft).length;
   const sharedText = sharedItem.type === 'text' ? sharedItem.text : '';
   const sharedImage = sharedItem.type === 'image' ? sharedItem : null;
@@ -112,10 +146,56 @@ const App = () => {
         setConnection('connected');
         const savedName = getStoredDeviceName();
         if (savedName) socket.send(JSON.stringify({ type: 'set-name', name: savedName }));
+        const savedSessionId = getStoredSessionId();
+        if (SESSION_ID_PATTERN.test(savedSessionId)) {
+          joiningStoredSessionRef.current = true;
+          setSessionPending(true);
+          socket.send(JSON.stringify({ type: 'join-session', sessionId: savedSessionId }));
+        }
       };
       socket.onmessage = (event) => {
         try {
           const update: unknown = JSON.parse(event.data);
+          if (isSessionUpdate(update)) {
+            if (update.type === 'session') {
+              joiningStoredSessionRef.current = false;
+              setSessionId(update.sessionId);
+              setSessionDraft('');
+              setSessionPending(false);
+              setDeviceId('');
+              setParticipants([]);
+              setSharedItem({ type: 'text', text: '' });
+              try {
+                window.localStorage.setItem(SESSION_STORAGE_KEY, update.sessionId);
+              } catch {
+                setNotice('Session joined, but could not be saved in this browser.');
+              }
+            } else if (update.type === 'session-error') {
+              const wasJoiningStoredSession = joiningStoredSessionRef.current;
+              joiningStoredSessionRef.current = false;
+              setSessionPending(false);
+              setNotice(update.message);
+              if (wasJoiningStoredSession) {
+                try {
+                  window.localStorage.removeItem(SESSION_STORAGE_KEY);
+                } catch {
+                  // Session state remains available for this connection.
+                }
+              }
+            } else {
+              setSessionId('');
+              setSessionPending(false);
+              setParticipants([]);
+              setDeviceId('');
+              setSharedItem({ type: 'text', text: '' });
+              try {
+                window.localStorage.removeItem(SESSION_STORAGE_KEY);
+              } catch {
+                // Session state remains available for this connection.
+              }
+            }
+            return;
+          }
           if (isParticipantUpdate(update)) {
             setDeviceId(update.deviceId);
             setParticipants(update.participants);
@@ -129,6 +209,11 @@ const App = () => {
       };
       socket.onclose = () => {
         if (!active) return;
+        setSessionPending(false);
+        setSessionId('');
+        setParticipants([]);
+        setDeviceId('');
+        setSharedItem({ type: 'text', text: '' });
         setConnection('reconnecting');
         retryTimer = setTimeout(connect, 1500);
       };
@@ -151,9 +236,48 @@ const App = () => {
       setNotice('Disconnected. Your draft is still here.');
       return;
     }
+    if (!sessionId || sessionPending) {
+      setNotice('Create or join a session to share text.');
+      return;
+    }
     socketRef.current.send(JSON.stringify({ type: 'text', text }));
     setSharedItem({ type: 'text', text });
     setNotice('Shared with connected devices.');
+  };
+
+  const createSession = () => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN || sessionPending) return;
+    joiningStoredSessionRef.current = false;
+    setSessionPending(true);
+    socketRef.current.send(JSON.stringify({ type: 'create-session' }));
+  };
+
+  const joinSession = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const id = sessionDraft.trim().toLowerCase();
+    if (!SESSION_ID_PATTERN.test(id)) {
+      setNotice('Enter a session ID in the format abc-defg-hij.');
+      return;
+    }
+    if (socketRef.current?.readyState !== WebSocket.OPEN || sessionPending) return;
+    joiningStoredSessionRef.current = false;
+    setSessionPending(true);
+    socketRef.current.send(JSON.stringify({ type: 'join-session', sessionId: id }));
+  };
+
+  const leaveSession = () => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN) return;
+    socketRef.current.send(JSON.stringify({ type: 'leave-session' }));
+  };
+
+  const copySessionId = async () => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+      await navigator.clipboard.writeText(sessionId);
+      setNotice('Session ID copied.');
+    } catch {
+      setNotice('Could not copy the session ID.');
+    }
   };
 
   const saveDeviceName = (event: FormEvent<HTMLFormElement>) => {
@@ -195,6 +319,10 @@ const App = () => {
     }
     if (socketRef.current?.readyState !== WebSocket.OPEN) {
       setNotice('Disconnected. Your image was not shared.');
+      return;
+    }
+    if (!sessionId || sessionPending) {
+      setNotice('Create or join a session to share images.');
       return;
     }
 
@@ -277,6 +405,52 @@ const App = () => {
           <span className="workspace-type">TEXT + IMAGE</span>
         </div>
 
+        <section className="session-bar" aria-label="Session">
+          {sessionId ? (
+            <>
+              <div className="active-session">
+                <span className="eyebrow">Session ID</span>
+                <code>{sessionId}</code>
+              </div>
+              <div className="session-actions">
+                <button className="file-button" type="button" onClick={copySessionId}>
+                  <Copy size={16} /> Copy ID
+                </button>
+                <button className="file-button" type="button" onClick={leaveSession} disabled={connection !== 'connected'}>
+                  Leave session
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="session-intro">
+                <span className="eyebrow">Private workspace</span>
+                <span>Create a session or join with an ID.</span>
+              </div>
+              <div className="session-actions">
+                <button className="share-button" type="button" onClick={createSession} disabled={connection !== 'connected' || sessionPending}>
+                  Create session
+                </button>
+                <form className="join-session-form" onSubmit={joinSession}>
+                  <label className="sr-only" htmlFor="session-id">Session ID</label>
+                  <input
+                    id="session-id"
+                    value={sessionDraft}
+                    onChange={(event) => setSessionDraft(formatSessionIdInput(event.target.value))}
+                    placeholder="abc-defg-hij"
+                    maxLength={12}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <button className="file-button" type="submit" disabled={connection !== 'connected' || sessionPending}>
+                    Join
+                  </button>
+                </form>
+              </div>
+            </>
+          )}
+        </section>
+
         <section className="presence" aria-label="Connected devices">
           <form className="device-name-form" onSubmit={saveDeviceName}>
             <label className="device-name-field" htmlFor="device-name">
@@ -310,7 +484,7 @@ const App = () => {
                   </li>
                 ))}
               </ul>
-            ) : <span className="participant-empty">Waiting for devices</span>}
+            ) : <span className="participant-empty">{sessionId ? 'Waiting for devices' : 'Create or join a session'}</span>}
           </div>
         </section>
 
@@ -372,10 +546,10 @@ const App = () => {
             <div className="compose-footer">
               <span className={draftBytes > MAX_TEXT_BYTES ? 'over-limit' : ''}>{(draftBytes / 1024).toFixed(1)} / 60 KB</span>
               <div className="compose-actions">
-                <button className="file-button" onClick={() => document.getElementById('image-file')?.click()} disabled={connection !== 'connected'}>
+                <button className="file-button" onClick={() => document.getElementById('image-file')?.click()} disabled={connection !== 'connected' || !sessionId || sessionPending}>
                   <ImagePlus size={17} /> Choose image
                 </button>
-                <button className="share-button" onClick={() => shareText(draft)} disabled={!draft || draftBytes > MAX_TEXT_BYTES || connection !== 'connected'}>
+                <button className="share-button" onClick={() => shareText(draft)} disabled={!draft || draftBytes > MAX_TEXT_BYTES || connection !== 'connected' || !sessionId || sessionPending}>
                   <Send size={17} /> Share text
                 </button>
               </div>
