@@ -1,0 +1,33 @@
+{
+  "name": "phonble",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "rsbuild build",
+    "dev": "rsbuild",
+    "lint": "rslint",
+    "preview": "rsbuild preview",
+    "test": "rstest",
+    "test:watch": "rstest --watch"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@rsbuild/core": "^2.3.0",
+    "@rsbuild/plugin-react": "^2.1.1",
+    "@rslint/core": "^0.9.5",
+    "@rstest/adapter-rsbuild": "^0.12.4",
+    "@rstest/core": "^0.12.4",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "happy-dom": "^20.14.6",
+    "typescript": "^7.0.2"
+  }
+}
