@@ -39,7 +39,7 @@ UI:
 
 ## 0.2 Second prototype
 
-- Support for images. Images are displayed in the destination app and can be downloaded.
+- Support for image sharing. Images are displayed in the destination app and can be downloaded.
 
 ## 0.3 Third prototype
 

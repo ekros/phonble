@@ -56,11 +56,20 @@ h2 { margin: 0; font-family: Georgia, serif; font-size: 28px; font-weight: 400; 
 .empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #74857d; gap: 9px; }
 .empty-state p { margin: 0; font-size: 14px; }
 .shared-text { flex: 1; margin: 0; padding: 14px 0; overflow: auto; overflow-wrap: anywhere; white-space: pre-wrap; font: 16px/1.65 'Trebuchet MS', sans-serif; user-select: text; }
+.shared-image { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 16px; margin: 0; }
+.shared-image img { display: block; max-width: 100%; max-height: 330px; object-fit: contain; object-position: left center; border-radius: 4px; background: #e9efec; }
+.download-button { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 14px; border: 1px solid #c9d7d1; border-radius: 6px; color: #17493d; background: #fff; font-size: 13px; font-weight: 700; text-decoration: none; }
+.download-button:hover { background: #e4efea; }
+.compose-area { display: flex; flex: 1; min-height: 175px; border-radius: 6px; }
+.compose-area.drag-active { outline: 2px dashed #007b64; outline-offset: 3px; background: #e4efea; }
 .outgoing textarea { width: 100%; flex: 1; min-height: 175px; padding: 18px; resize: vertical; border: 1px solid #c4d4cc; border-radius: 6px; color: #172521; background: #fff; line-height: 1.5; }
 .outgoing textarea::placeholder { color: #84918b; }
 .compose-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; }
 .compose-footer span { color: #697b72; font-size: 12px; white-space: nowrap; }
 .compose-footer .over-limit { color: #ae4e38; }
+.compose-actions { display: flex; gap: 8px; }
+.file-button { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; padding: 0 14px; border: 1px solid #c9d7d1; border-radius: 6px; color: #17493d; background: #fff; font-size: 13px; font-weight: 700; }
+.file-button:not(:disabled):hover { background: #e4efea; }
 .share-button { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 42px; padding: 0 20px; border: 0; border-radius: 6px; color: white; background: #006d59; font-size: 14px; font-weight: 700; }
 .share-button:not(:disabled):hover { background: #005140; }
 .footnote { min-height: 40px; padding-top: 17px; color: #65756d; font-size: 12px; }
@@ -74,4 +83,7 @@ h2 { margin: 0; font-family: Georgia, serif; font-size: 28px; font-weight: 400; 
   .pane { min-height: 265px; padding: 26px 0; }
   .pane + .pane { border-left: 0; border-top: 1px solid #bacbc4; padding-left: 0; }
   .outgoing { min-height: 335px; }
+  .compose-footer { align-items: flex-start; flex-direction: column; }
+  .compose-actions { width: 100%; }
+  .compose-actions button { flex: 1; padding: 0 10px; }
 }

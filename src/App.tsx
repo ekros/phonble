@@ -1,17 +1,74 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ClipboardEvent } from 'react';
-import { Clipboard, Copy, Send, Trash2, Wifi, WifiOff } from 'lucide-react';
+import type { ClipboardEvent, DragEvent } from 'react';
+import { Clipboard, Copy, Download, ImagePlus, Send, Trash2, Wifi, WifiOff } from 'lucide-react';
 import './App.css';
 
 const MAX_TEXT_BYTES = 60 * 1024;
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const SUPPORTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const IMAGE_EXTENSIONS: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+};
+
+type SharedUpdate =
+  | { type: 'text'; text: string }
+  | { type: 'image'; mimeType: string; data: string };
+
+const getBase64ByteLength = (data: string) => {
+  if (
+    data.length === 0 ||
+    data.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data)
+  ) {
+    return null;
+  }
+
+  const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
+  return (data.length / 4) * 3 - padding;
+};
+
+const isSharedUpdate = (value: unknown): value is SharedUpdate => {
+  if (!value || typeof value !== 'object') return false;
+  const update = value as Record<string, unknown>;
+
+  if (update.type === 'text') {
+    return typeof update.text === 'string' && new TextEncoder().encode(update.text).length <= MAX_TEXT_BYTES;
+  }
+
+  if (update.type === 'image' && typeof update.mimeType === 'string' && typeof update.data === 'string') {
+    const byteLength = getBase64ByteLength(update.data);
+    return SUPPORTED_IMAGE_TYPES.has(update.mimeType) && byteLength !== null && byteLength <= MAX_IMAGE_BYTES;
+  }
+
+  return false;
+};
+
+const fileToBase64 = async (file: File) => {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = '';
+  const chunkSize = 0x8000;
+
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+
+  return btoa(binary);
+};
 
 const App = () => {
-  const [sharedText, setSharedText] = useState('');
+  const [sharedItem, setSharedItem] = useState<SharedUpdate>({ type: 'text', text: '' });
   const [draft, setDraft] = useState('');
   const [connection, setConnection] = useState<'connecting' | 'connected' | 'reconnecting'>('connecting');
   const [notice, setNotice] = useState('');
+  const [dragActive, setDragActive] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const draftBytes = new TextEncoder().encode(draft).length;
+  const sharedText = sharedItem.type === 'text' ? sharedItem.text : '';
+  const sharedImage = sharedItem.type === 'image' ? sharedItem : null;
+  const hasSharedItem = Boolean(sharedText || sharedImage);
 
   useEffect(() => {
     let active = true;
@@ -25,10 +82,9 @@ const App = () => {
       socket.onopen = () => setConnection('connected');
       socket.onmessage = (event) => {
         try {
-          const update = JSON.parse(event.data);
-          if (update.type === 'text' && typeof update.text === 'string') {
-            setSharedText(update.text);
-          }
+          const update: unknown = JSON.parse(event.data);
+          if (!isSharedUpdate(update)) throw new Error('Invalid shared update');
+          setSharedItem(update);
         } catch {
           setNotice('Received an invalid update.');
         }
@@ -48,7 +104,7 @@ const App = () => {
     };
   }, []);
 
-  const share = (text: string) => {
+  const shareText = (text: string) => {
     if (new TextEncoder().encode(text).length > MAX_TEXT_BYTES) {
       setNotice('Text is too large to share.');
       return;
@@ -58,15 +114,61 @@ const App = () => {
       return;
     }
     socketRef.current.send(JSON.stringify({ type: 'text', text }));
+    setSharedItem({ type: 'text', text });
     setNotice('Shared with connected devices.');
   };
 
+  const shareImage = async (file: File) => {
+    if (!SUPPORTED_IMAGE_TYPES.has(file.type)) {
+      setNotice('Choose a PNG, JPEG, WebP, or GIF image.');
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setNotice('Image is too large. Maximum size is 5 MB.');
+      return;
+    }
+    if (socketRef.current?.readyState !== WebSocket.OPEN) {
+      setNotice('Disconnected. Your image was not shared.');
+      return;
+    }
+
+    try {
+      const data = await fileToBase64(file);
+      if (socketRef.current?.readyState !== WebSocket.OPEN) {
+        setNotice('Disconnected. Your image was not shared.');
+        return;
+      }
+      const update = { type: 'image', mimeType: file.type, data } satisfies SharedUpdate;
+      socketRef.current.send(JSON.stringify(update));
+      setSharedItem(update);
+      setNotice('Shared with connected devices.');
+    } catch {
+      setNotice('Could not read this image.');
+    }
+  };
+
   const paste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const imageItem = Array.from(event.clipboardData.items).find((item) => item.kind === 'file');
+    if (imageItem) {
+      event.preventDefault();
+      const image = imageItem.getAsFile();
+      if (image) void shareImage(image);
+      else setNotice('Could not read this image.');
+      return;
+    }
+
     event.preventDefault();
     const input = event.currentTarget;
     const text = draft.slice(0, input.selectionStart) + event.clipboardData.getData('text/plain') + draft.slice(input.selectionEnd);
     setDraft(text);
-    share(text);
+    shareText(text);
+  };
+
+  const dropImage = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragActive(false);
+    const image = event.dataTransfer.files[0];
+    if (image) void shareImage(image);
   };
 
   const copy = async () => {
@@ -106,39 +208,74 @@ const App = () => {
             <p className="eyebrow">Shared workspace / 01</p>
             <h1>Clipboard</h1>
           </div>
-          <span className="workspace-type">TEXT ONLY</span>
+          <span className="workspace-type">TEXT + IMAGE</span>
         </div>
 
         <div className="panes">
           <section className="pane incoming" aria-labelledby="incoming-heading">
             <div className="pane-heading">
-              <div><p className="eyebrow">01 / From your devices</p><h2 id="incoming-heading">Latest text</h2></div>
+              <div><p className="eyebrow">01 / From your devices</p><h2 id="incoming-heading">Latest share</h2></div>
               <div className="pane-actions">
                 <button className="icon-button" title="Copy shared text" aria-label="Copy shared text" onClick={copy} disabled={!sharedText}>
                   <Copy size={18} />
                 </button>
-                <button className="icon-button" title="Clear shared text" aria-label="Clear shared text" onClick={() => share('')} disabled={!sharedText || connection !== 'connected'}>
+                <button className="icon-button" title="Clear shared item" aria-label="Clear shared item" onClick={() => shareText('')} disabled={!hasSharedItem || connection !== 'connected'}>
                   <Trash2 size={18} />
                 </button>
               </div>
             </div>
-            {sharedText ? <pre className="shared-text">{sharedText}</pre> : (
+            {sharedImage ? (
+              <figure className="shared-image">
+                <img src={`data:${sharedImage.mimeType};base64,${sharedImage.data}`} alt="Shared image" />
+                <a className="download-button" href={`data:${sharedImage.mimeType};base64,${sharedImage.data}`} download={`shared-image.${IMAGE_EXTENSIONS[sharedImage.mimeType]}`}>
+                  <Download size={17} /> Download image
+                </a>
+              </figure>
+            ) : sharedText ? <pre className="shared-text">{sharedText}</pre> : (
               <div className="empty-state"><Clipboard size={28} strokeWidth={1.5} /><p>Nothing shared yet.</p></div>
             )}
           </section>
 
           <section className="pane outgoing" aria-labelledby="outgoing-heading">
             <div className="pane-heading">
-              <div><p className="eyebrow">02 / From this device</p><h2 id="outgoing-heading">Send text</h2></div>
+              <div><p className="eyebrow">02 / From this device</p><h2 id="outgoing-heading">Send text or image</h2></div>
               <span className="pane-symbol" aria-hidden="true"><Send size={20} /></span>
             </div>
             <label className="sr-only" htmlFor="draft">Text to share</label>
-            <textarea id="draft" value={draft} onChange={(event) => setDraft(event.target.value)} onPaste={paste} placeholder="Type or paste text here..." spellCheck={false} />
+            <div
+              className={`compose-area${dragActive ? ' drag-active' : ''}`}
+              aria-label="Image drop area"
+              onDragOver={(event) => {
+                event.preventDefault();
+                setDragActive(true);
+              }}
+              onDragLeave={() => setDragActive(false)}
+              onDrop={dropImage}
+            >
+              <textarea id="draft" value={draft} onChange={(event) => setDraft(event.target.value)} onPaste={paste} placeholder="Type text, or paste/drop an image..." spellCheck={false} />
+            </div>
+            <input
+              id="image-file"
+              className="sr-only"
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              aria-label="Choose image"
+              onChange={(event) => {
+                const image = event.currentTarget.files?.[0];
+                if (image) void shareImage(image);
+                event.currentTarget.value = '';
+              }}
+            />
             <div className="compose-footer">
               <span className={draftBytes > MAX_TEXT_BYTES ? 'over-limit' : ''}>{(draftBytes / 1024).toFixed(1)} / 60 KB</span>
-              <button className="share-button" onClick={() => share(draft)} disabled={!draft || draftBytes > MAX_TEXT_BYTES || connection !== 'connected'}>
-                <Send size={17} /> Share text
-              </button>
+              <div className="compose-actions">
+                <button className="file-button" onClick={() => document.getElementById('image-file')?.click()} disabled={connection !== 'connected'}>
+                  <ImagePlus size={17} /> Choose image
+                </button>
+                <button className="share-button" onClick={() => shareText(draft)} disabled={!draft || draftBytes > MAX_TEXT_BYTES || connection !== 'connected'}>
+                  <Send size={17} /> Share text
+                </button>
+              </div>
             </div>
           </section>
         </div>
