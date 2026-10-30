@@ -46,6 +46,7 @@ const renderConnected = async () => {
 afterEach(() => {
   cleanup();
   MockWebSocket.lastInstance = null;
+  window.localStorage.clear();
   Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: originalWebSocket });
 });
 
@@ -107,6 +108,51 @@ test('keeps the existing text sharing flow', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Share text' }));
 
   expect(MockWebSocket.lastInstance?.sent).toContain(JSON.stringify({ type: 'text', text: 'hello' }));
+});
+
+test('shows connected participants and marks this device', async () => {
+  Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: MockWebSocket });
+  await renderConnected();
+
+  act(() => MockWebSocket.lastInstance?.receive({
+    type: 'participants',
+    deviceId: 'desk-1',
+    participants: [
+      { id: 'desk-1', name: 'Work laptop' },
+      { id: 'phone-1', name: 'Pocket phone' },
+    ],
+  }));
+
+  expect(screen.getByText('Work laptop')).toBeInTheDocument();
+  expect(screen.getByText('Pocket phone')).toBeInTheDocument();
+  expect(screen.getByText('(you)')).toBeInTheDocument();
+  expect(screen.getByText('2')).toBeInTheDocument();
+});
+
+test('saves a device name and sends it to the relay', async () => {
+  Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: MockWebSocket });
+  await renderConnected();
+
+  fireEvent.change(screen.getByLabelText('This device'), { target: { value: 'Studio laptop' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save name' }));
+
+  expect(MockWebSocket.lastInstance?.sent).toContain(JSON.stringify({ type: 'set-name', name: 'Studio laptop' }));
+  expect(window.localStorage.getItem('phonble-device-name')).toBe('Studio laptop');
+});
+
+test('limits device name input to 32 characters', async () => {
+  Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: MockWebSocket });
+  await renderConnected();
+
+  expect(screen.getByLabelText('This device')).toHaveAttribute('maxLength', '32');
+});
+
+test('re-sends the saved device name after reconnect', async () => {
+  window.localStorage.setItem('phonble-device-name', 'Studio laptop');
+  Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: MockWebSocket });
+  await renderConnected();
+
+  expect(MockWebSocket.lastInstance?.sent).toContain(JSON.stringify({ type: 'set-name', name: 'Studio laptop' }));
 });
 
 test('rejects unsupported image types and files over 5 MB', async () => {

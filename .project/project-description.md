@@ -1,5 +1,7 @@
 # Phonble
 
+**AGENT: DO NOT MODIFY THIS FILE UNLESS DIRECTLY ASKED**
+
 Phonble is a new way to multitask using a PC and a phone.
 
 It is a pair of applications working together:
@@ -42,6 +44,17 @@ UI:
 - Support for image sharing. Images are displayed in the destination app and can be downloaded.
 
 ## 0.3 Third prototype
+
+- We can set a name for the device.
+- All participants can see who is connected.
+
+## 0.4 Multidevice
+
+- Devices can create a session or join one
+- Sessions are stored in server memory
+- Sessions have a short but secure alphanumeric value
+
+## 0.5 Phone participants
 
 - Phone positioning and pointer sync
   - A rectangle can be resized to define the boundaries of the phone that will be positioned on the screen.

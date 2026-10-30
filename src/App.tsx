@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ClipboardEvent, DragEvent } from 'react';
-import { Clipboard, Copy, Download, ImagePlus, Send, Trash2, Wifi, WifiOff } from 'lucide-react';
+import type { ClipboardEvent, DragEvent, FormEvent } from 'react';
+import { Clipboard, Copy, Download, ImagePlus, Send, Trash2, Users, Wifi, WifiOff } from 'lucide-react';
 import './App.css';
 
 const MAX_TEXT_BYTES = 60 * 1024;
@@ -16,6 +16,31 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
 type SharedUpdate =
   | { type: 'text'; text: string }
   | { type: 'image'; mimeType: string; data: string };
+type Participant = { id: string; name: string };
+type ParticipantUpdate = { type: 'participants'; deviceId: string; participants: Participant[] };
+
+const getStoredDeviceName = () => {
+  try {
+    return window.localStorage.getItem('phonble-device-name') ?? '';
+  } catch {
+    return '';
+  }
+};
+
+const isParticipantUpdate = (value: unknown): value is ParticipantUpdate => {
+  if (!value || typeof value !== 'object') return false;
+  const update = value as Record<string, unknown>;
+  return (
+    update.type === 'participants' &&
+    typeof update.deviceId === 'string' &&
+    Array.isArray(update.participants) &&
+    update.participants.every((participant) =>
+      participant &&
+      typeof participant.id === 'string' &&
+      typeof participant.name === 'string'
+    )
+  );
+};
 
 const getBase64ByteLength = (data: string) => {
   if (
@@ -64,6 +89,10 @@ const App = () => {
   const [connection, setConnection] = useState<'connecting' | 'connected' | 'reconnecting'>('connecting');
   const [notice, setNotice] = useState('');
   const [dragActive, setDragActive] = useState(false);
+  const [deviceName, setDeviceName] = useState(getStoredDeviceName);
+  const [nameDraft, setNameDraft] = useState(getStoredDeviceName);
+  const [deviceId, setDeviceId] = useState('');
+  const [participants, setParticipants] = useState<Participant[]>([]);
   const socketRef = useRef<WebSocket | null>(null);
   const draftBytes = new TextEncoder().encode(draft).length;
   const sharedText = sharedItem.type === 'text' ? sharedItem.text : '';
@@ -79,10 +108,19 @@ const App = () => {
     const connect = () => {
       const socket = new WebSocket(url);
       socketRef.current = socket;
-      socket.onopen = () => setConnection('connected');
+      socket.onopen = () => {
+        setConnection('connected');
+        const savedName = getStoredDeviceName();
+        if (savedName) socket.send(JSON.stringify({ type: 'set-name', name: savedName }));
+      };
       socket.onmessage = (event) => {
         try {
           const update: unknown = JSON.parse(event.data);
+          if (isParticipantUpdate(update)) {
+            setDeviceId(update.deviceId);
+            setParticipants(update.participants);
+            return;
+          }
           if (!isSharedUpdate(update)) throw new Error('Invalid shared update');
           setSharedItem(update);
         } catch {
@@ -116,6 +154,34 @@ const App = () => {
     socketRef.current.send(JSON.stringify({ type: 'text', text }));
     setSharedItem({ type: 'text', text });
     setNotice('Shared with connected devices.');
+  };
+
+  const saveDeviceName = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const name = nameDraft.trim();
+    const hasControlCharacter = name.split('').some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127;
+    });
+    if (!name || name.length > 32 || hasControlCharacter) {
+      setNotice('Enter a device name between 1 and 32 characters.');
+      return;
+    }
+    if (socketRef.current?.readyState !== WebSocket.OPEN) {
+      setNotice('Disconnected. Your device name was not updated.');
+      return;
+    }
+
+    socketRef.current.send(JSON.stringify({ type: 'set-name', name }));
+    setDeviceName(name);
+    setNameDraft(name);
+    try {
+      window.localStorage.setItem('phonble-device-name', name);
+    } catch {
+      setNotice('Name updated for this connection, but could not be saved in this browser.');
+      return;
+    }
+    setNotice('Device name updated.');
   };
 
   const shareImage = async (file: File) => {
@@ -210,6 +276,43 @@ const App = () => {
           </div>
           <span className="workspace-type">TEXT + IMAGE</span>
         </div>
+
+        <section className="presence" aria-label="Connected devices">
+          <form className="device-name-form" onSubmit={saveDeviceName}>
+            <label className="device-name-field" htmlFor="device-name">
+              <span className="eyebrow">This device</span>
+              <input
+                id="device-name"
+                value={nameDraft}
+                onChange={(event) => setNameDraft(event.target.value)}
+                placeholder="Name this device"
+                maxLength={32}
+                autoComplete="off"
+              />
+            </label>
+            <button className="file-button" type="submit" disabled={connection !== 'connected' || nameDraft.trim() === deviceName}>
+              Save name
+            </button>
+          </form>
+          <div className="participants" aria-live="polite">
+            <div className="participants-heading">
+              <Users size={17} aria-hidden="true" />
+              <span>Connected</span>
+              <span className="participant-count">{participants.length}</span>
+            </div>
+            {participants.length ? (
+              <ul className="participant-list">
+                {participants.map((participant) => (
+                  <li className="participant" key={participant.id}>
+                    <span className="participant-indicator" aria-hidden="true" />
+                    <span>{participant.name}</span>
+                    {participant.id === deviceId ? <span className="self-label">(you)</span> : null}
+                  </li>
+                ))}
+              </ul>
+            ) : <span className="participant-empty">Waiting for devices</span>}
+          </div>
+        </section>
 
         <div className="panes">
           <section className="pane incoming" aria-labelledby="incoming-heading">

@@ -1,6 +1,6 @@
-# Phonble 0.2
+# Phonble 0.3
 
-Text and images shared between browsers on a trusted local network. One machine hosts the app and relay; every visitor sees the latest shared item.
+Text and images shared between named browsers on a trusted local network. One machine hosts the app and relay; every visitor sees the latest shared item and the connected-device roster.
 
 ## Setup
 
@@ -34,5 +34,7 @@ npm run start
 Open `http://<host-LAN-IP>:3001` from each computer. Allow incoming connections to port 3001 through the host firewall. Set `PORT` to change this port (the development proxy still targets 3001).
 
 Paste text or an image into the compose area to share it immediately. You can also type text and choose Share text, drop an image into the area, or choose an image file. PNG, JPEG, WebP, and GIF images up to 5 MB are supported. Images appear in the shared pane and can be downloaded there. Copy takes received text to the clipboard. Clipboard access requires a user action; browsers cannot reliably monitor the system clipboard or grant automatic clipboard access to an HTTP LAN page. If Copy is blocked, select the displayed text and copy it manually.
+
+Enter a device name in the connected-devices strip and choose Save name. Names are saved in that browser and restored when it reconnects. All connected browsers see the current participant names; unnamed devices appear as `Device 1`, `Device 2`, and so on. This prototype has no sessions, so all clients connected to the relay share one roster and clipboard item.
 
 Only one shared item is stored at a time: text up to 60 KB or one image up to 5 MB. The latest update replaces the previous one, and restarting the server clears it. There is no login or encryption on HTTP: anyone who can reach the host can read or replace shared content. Use only on a trusted network; do not expose this prototype to the public internet.

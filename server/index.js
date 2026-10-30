@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import express from 'express';
@@ -12,6 +13,7 @@ const maxPayloadBytes = Math.ceil(maxImageBytes / 3) * 4 + 256;
 const supportedImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const port = Number(process.env.PORT ?? 3001);
 let latestUpdate = { type: 'text', text: '' };
+const participants = new Map();
 
 const getBase64ByteLength = (data) => {
   if (
@@ -24,6 +26,25 @@ const getBase64ByteLength = (data) => {
 
   const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
   return (data.length / 4) * 3 - padding;
+};
+
+const broadcastParticipants = () => {
+  const roster = Array.from(participants.values());
+  for (const peer of clients.clients) {
+    if (peer.readyState !== WebSocket.OPEN) continue;
+    peer.send(JSON.stringify({
+      type: 'participants',
+      deviceId: participants.get(peer)?.id,
+      participants: roster,
+    }));
+  }
+};
+
+const getDefaultDeviceName = () => {
+  const names = new Set(Array.from(participants.values(), (participant) => participant.name));
+  let number = 1;
+  while (names.has(`Device ${number}`)) number += 1;
+  return `Device ${number}`;
 };
 
 app.use(express.static(dist));
@@ -46,10 +67,16 @@ server.on('upgrade', (request, socket, head) => {
 });
 
 clients.on('connection', (client) => {
+  participants.set(client, { id: randomUUID(), name: getDefaultDeviceName() });
   client.send(JSON.stringify(latestUpdate));
+  broadcastParticipants();
 
   client.on('error', (error) => {
     console.warn('WebSocket client error:', error.message);
+  });
+
+  client.on('close', () => {
+    if (participants.delete(client)) broadcastParticipants();
   });
 
   client.on('message', (message, isBinary) => {
@@ -57,6 +84,22 @@ clients.on('connection', (client) => {
     try {
       if (isBinary) throw new Error('Binary messages are unsupported');
       update = JSON.parse(message.toString());
+
+      if (update?.type === 'set-name') {
+        const name = typeof update.name === 'string' ? update.name.trim() : '';
+        const hasControlCharacter = name.split('').some((character) => {
+          const code = character.charCodeAt(0);
+          return code < 32 || code === 127;
+        });
+        if (!name || name.length > 32 || hasControlCharacter) {
+          throw new Error('Invalid device name');
+        }
+        const participant = participants.get(client);
+        if (!participant) throw new Error('Unknown participant');
+        participants.set(client, { ...participant, name });
+        broadcastParticipants();
+        return;
+      }
 
       if (update?.type === 'text') {
         if (typeof update.text !== 'string' || Buffer.byteLength(update.text, 'utf8') > maxTextBytes) {
