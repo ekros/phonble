@@ -10,6 +10,8 @@ const dist = fileURLToPath(new URL('../dist/', import.meta.url));
 const maxTextBytes = 60 * 1024;
 const maxImageBytes = 5 * 1024 * 1024;
 const maxPayloadBytes = Math.ceil(maxImageBytes / 3) * 4 + 256;
+const maxHistoryEntries = 20;
+const maxHistoryBytes = 12 * 1024 * 1024;
 const supportedImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const port = Number(process.env.PORT ?? 3001);
 const sessionIdAlphabet = 'abcdefghijklmnopqrstuvwxyz23456789';
@@ -100,6 +102,7 @@ export const createRelayServer = () => {
     removeSessionIfEmpty(previousSessionId);
     client.send(JSON.stringify({ type: 'session', sessionId }));
     client.send(JSON.stringify(sessions.get(sessionId).latestUpdate));
+    client.send(JSON.stringify({ type: 'history', items: sessions.get(sessionId).history }));
     broadcastParticipants(previousSessionId);
     broadcastParticipants(sessionId);
   };
@@ -143,7 +146,11 @@ export const createRelayServer = () => {
 
         if (update?.type === 'create-session') {
           const sessionId = generateSessionId(sessions);
-          sessions.set(sessionId, { latestUpdate: { type: 'text', text: '' } });
+          sessions.set(sessionId, {
+            latestUpdate: { type: 'text', text: '' },
+            history: [],
+            historyBytes: 0,
+          });
           assignToSession(client, sessionId);
           return;
         }
@@ -209,12 +216,35 @@ export const createRelayServer = () => {
         const session = participant?.sessionId ? sessions.get(participant.sessionId) : null;
         if (!session) throw new Error('Participant is not in a session');
         session.latestUpdate = update;
+        let historyPayload;
+        if (update.type === 'image' || update.text.length > 0) {
+          const historyItem = {
+            ...update,
+            id: randomUUID(),
+            deviceName: participant.name,
+            timestamp: Date.now(),
+          };
+          session.history.unshift(historyItem);
+          session.historyBytes += Buffer.byteLength(JSON.stringify(historyItem));
+          const removedIds = [];
+          while (session.history.length > maxHistoryEntries || session.historyBytes > maxHistoryBytes) {
+            const removedItem = session.history.pop();
+            if (removedItem) {
+              session.historyBytes -= Buffer.byteLength(JSON.stringify(removedItem));
+              removedIds.push(removedItem.id);
+            }
+          }
+          historyPayload = JSON.stringify({ type: 'history-item', item: historyItem, removedIds });
+        }
         const payload = JSON.stringify(update);
         for (const peer of clients.clients) {
           if (
             peer.readyState === WebSocket.OPEN &&
             participants.get(peer)?.sessionId === participant.sessionId
-          ) peer.send(payload);
+          ) {
+            peer.send(payload);
+            if (historyPayload) peer.send(historyPayload);
+          }
         }
       } catch {
         client.close(1003, 'Invalid shared update');

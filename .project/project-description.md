@@ -57,7 +57,10 @@ UI:
 
 ## 0.5 Phone participants
 
-- Phone positioning and pointer sync
+- Phone positioning
   - A rectangle can be resized to define the boundaries of the phone that will be positioned on the screen.
-  - Once defined, the pointer is "teleported" to the phone when it enters the defined area.
-    -> Using this feature as a base, I want to perform actions in the app running in the phone (TBD)
+
+## 0.6 Pointer sync
+
+- Once defined, the pointer is "teleported" to the phone when it enters the defined area.
+  -> Using this feature as a base, I want to perform actions in the app running in the phone (TBD)

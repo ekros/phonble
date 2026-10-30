@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ClipboardEvent, DragEvent, FormEvent } from 'react';
-import { Clipboard, Copy, Download, ImagePlus, Send, Trash2, Users, Wifi, WifiOff } from 'lucide-react';
+import { Clipboard, Copy, Download, ImagePlus, Search, Send, Trash2, Users, Wifi, WifiOff } from 'lucide-react';
 import './App.css';
 
 const MAX_TEXT_BYTES = 60 * 1024;
@@ -16,8 +16,11 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
 type SharedUpdate =
   | { type: 'text'; text: string }
   | { type: 'image'; mimeType: string; data: string };
+type HistoryItem = SharedUpdate & { id: string; deviceName: string; timestamp: number };
 type Participant = { id: string; name: string };
 type ParticipantUpdate = { type: 'participants'; deviceId: string; participants: Participant[] };
+type HistoryUpdate = { type: 'history'; items: HistoryItem[] };
+type HistoryItemUpdate = { type: 'history-item'; item: HistoryItem; removedIds: string[] };
 type SessionUpdate =
   | { type: 'session'; sessionId: string }
   | { type: 'session-error'; message: string }
@@ -70,6 +73,35 @@ const isSessionUpdate = (value: unknown): value is SessionUpdate => {
   if (update.type === 'session') return typeof update.sessionId === 'string';
   if (update.type === 'session-error') return typeof update.message === 'string';
   return update.type === 'session-left';
+};
+
+const isHistoryItem = (value: unknown): value is HistoryItem => {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as Record<string, unknown>;
+  return (
+    typeof item.id === 'string' &&
+    typeof item.deviceName === 'string' &&
+    typeof item.timestamp === 'number' &&
+    Number.isFinite(item.timestamp) &&
+    isSharedUpdate(value)
+  );
+};
+
+const isHistoryUpdate = (value: unknown): value is HistoryUpdate => {
+  if (!value || typeof value !== 'object') return false;
+  const update = value as Record<string, unknown>;
+  return update.type === 'history' && Array.isArray(update.items) && update.items.length <= 20 && update.items.every(isHistoryItem);
+};
+
+const isHistoryItemUpdate = (value: unknown): value is HistoryItemUpdate => {
+  if (!value || typeof value !== 'object') return false;
+  const update = value as Record<string, unknown>;
+  return (
+    update.type === 'history-item' &&
+    isHistoryItem(update.item) &&
+    Array.isArray(update.removedIds) &&
+    update.removedIds.every((id) => typeof id === 'string')
+  );
 };
 
 const getBase64ByteLength = (data: string) => {
@@ -126,6 +158,8 @@ const App = () => {
   const [sessionPending, setSessionPending] = useState(false);
   const [deviceId, setDeviceId] = useState('');
   const [participants, setParticipants] = useState<Participant[]>([]);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [historySearch, setHistorySearch] = useState('');
   const socketRef = useRef<WebSocket | null>(null);
   const joiningStoredSessionRef = useRef(false);
   const draftBytes = new TextEncoder().encode(draft).length;
@@ -164,6 +198,7 @@ const App = () => {
               setSessionPending(false);
               setDeviceId('');
               setParticipants([]);
+              setHistory([]);
               setSharedItem({ type: 'text', text: '' });
               try {
                 window.localStorage.setItem(SESSION_STORAGE_KEY, update.sessionId);
@@ -187,6 +222,7 @@ const App = () => {
               setSessionPending(false);
               setParticipants([]);
               setDeviceId('');
+              setHistory([]);
               setSharedItem({ type: 'text', text: '' });
               try {
                 window.localStorage.removeItem(SESSION_STORAGE_KEY);
@@ -201,6 +237,17 @@ const App = () => {
             setParticipants(update.participants);
             return;
           }
+          if (isHistoryUpdate(update)) {
+            setHistory(update.items);
+            return;
+          }
+          if (isHistoryItemUpdate(update)) {
+            setHistory((items) => [
+              update.item,
+              ...items.filter((item) => item.id !== update.item.id && !update.removedIds.includes(item.id)),
+            ]);
+            return;
+          }
           if (!isSharedUpdate(update)) throw new Error('Invalid shared update');
           setSharedItem(update);
         } catch {
@@ -213,6 +260,7 @@ const App = () => {
         setSessionId('');
         setParticipants([]);
         setDeviceId('');
+        setHistory([]);
         setSharedItem({ type: 'text', text: '' });
         setConnection('reconnecting');
         retryTimer = setTimeout(connect, 1500);
@@ -386,6 +434,48 @@ const App = () => {
     setNotice('Copied to clipboard.');
   };
 
+  const copyHistoryItem = async (item: HistoryItem) => {
+    try {
+      if (item.type === 'text') {
+        if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+        await navigator.clipboard.writeText(item.text);
+      } else {
+        if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+          throw new Error('Image clipboard API unavailable');
+        }
+        const source = await (await fetch(`data:${item.mimeType};base64,${item.data}`)).blob();
+        let png = source;
+        if (item.mimeType !== 'image/png') {
+          const bitmap = await createImageBitmap(source);
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = bitmap.width;
+            canvas.height = bitmap.height;
+            const context = canvas.getContext('2d');
+            if (!context) throw new Error('Canvas unavailable');
+            context.drawImage(bitmap, 0, 0);
+            png = await new Promise<Blob>((resolve, reject) => {
+              canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Image conversion failed')), 'image/png');
+            });
+          } finally {
+            bitmap.close();
+          }
+        }
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+      }
+      setNotice('Copied previous share to clipboard.');
+    } catch {
+      setNotice(item.type === 'image' ? 'Could not copy image. Download it from history instead.' : 'Could not copy this share.');
+    }
+  };
+
+  const filteredHistory = history.filter((item) => {
+    const search = historySearch.trim().toLocaleLowerCase();
+    if (!search) return true;
+    const content = item.type === 'text' ? item.text : `image ${item.mimeType}`;
+    return `${content} ${item.deviceName}`.toLocaleLowerCase().includes(search);
+  });
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -556,6 +646,71 @@ const App = () => {
             </div>
           </section>
         </div>
+        <section className="history" aria-labelledby="history-heading">
+          <div className="history-heading">
+            <div>
+              <p className="eyebrow">03 / In this session</p>
+              <h2 id="history-heading">Clipboard history</h2>
+            </div>
+            <label className="history-search">
+              <Search size={17} aria-hidden="true" />
+              <span className="sr-only">Search clipboard history</span>
+              <input
+                type="search"
+                value={historySearch}
+                onChange={(event) => setHistorySearch(event.target.value)}
+                placeholder="Search shares or devices"
+                disabled={!sessionId}
+              />
+            </label>
+          </div>
+          {!sessionId ? (
+            <p className="history-empty">Join a session to build a shared history.</p>
+          ) : history.length === 0 ? (
+            <p className="history-empty">New shares will appear here.</p>
+          ) : filteredHistory.length === 0 ? (
+            <p className="history-empty">No matching shares.</p>
+          ) : (
+            <ul className="history-list">
+              {filteredHistory.map((item) => (
+                <li className="history-entry" key={item.id}>
+                  <div className="history-entry-content">
+                    {item.type === 'text' ? (
+                      <p className="history-preview">{item.text || 'Empty text share'}</p>
+                    ) : (
+                      <img
+                        className="history-thumbnail"
+                        src={`data:${item.mimeType};base64,${item.data}`}
+                        alt="Shared image preview"
+                      />
+                    )}
+                    <div className="history-meta">
+                      <span>{item.deviceName}</span>
+                      <time dateTime={new Date(item.timestamp).toISOString()}>
+                        {new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(item.timestamp)}
+                      </time>
+                    </div>
+                  </div>
+                  <div className="history-actions">
+                    <button className="file-button" type="button" onClick={() => void copyHistoryItem(item)}>
+                      <Copy size={15} /> {item.type === 'text' ? 'Copy' : 'Copy image'}
+                    </button>
+                    {item.type === 'image' ? (
+                      <a
+                        className="download-button"
+                        href={`data:${item.mimeType};base64,${item.data}`}
+                        download={`shared-image-${item.id}.${IMAGE_EXTENSIONS[item.mimeType]}`}
+                        aria-label={`Download image shared by ${item.deviceName}`}
+                      >
+                        <Download size={15} />
+                      </a>
+                    ) : null}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
         <div className="footnote" aria-live="polite">{notice || 'One shared clipboard across connected devices.'}</div>
       </section>
     </main>

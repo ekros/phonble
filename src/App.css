@@ -91,6 +91,23 @@ h2 { margin: 0; font-family: Georgia, serif; font-size: 28px; font-weight: 400; 
 .compose-footer span { color: #697b72; font-size: 12px; white-space: nowrap; }
 .compose-footer .over-limit { color: #ae4e38; }
 .compose-actions { display: flex; gap: 8px; }
+.history { padding: 28px 0 8px; border-bottom: 1px solid #bacbc4; }
+.history-heading { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 12px; }
+.history-heading .eyebrow { margin-bottom: 7px; }
+.history-search { display: flex; align-items: center; gap: 9px; width: min(100%, 300px); height: 42px; padding: 0 12px; border: 1px solid #c4d4cc; border-radius: 6px; color: #64756d; background: #fff; }
+.history-search:focus-within { outline: 2px solid #007b64; outline-offset: 2px; }
+.history-search input { width: 100%; min-width: 0; border: 0; outline: 0; color: #172521; background: transparent; font: inherit; font-size: 13px; }
+.history-search input:disabled { cursor: not-allowed; }
+.history-empty { margin: 0; padding: 18px 0; color: #74857d; font-size: 13px; }
+.history-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; margin: 0; padding: 0; list-style: none; }
+.history-entry { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-width: 0; padding: 16px 0; border-top: 1px solid #d5e0dc; }
+.history-entry-content { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.history-preview { display: -webkit-box; min-width: 0; margin: 0; overflow: hidden; color: #344840; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.history-thumbnail { display: block; width: 48px; height: 48px; flex: 0 0 48px; object-fit: cover; border-radius: 4px; background: #e9efec; }
+.history-meta { display: flex; flex-direction: column; gap: 4px; min-width: 95px; color: #52635b; font-size: 11px; }
+.history-meta time { color: #7a8982; }
+.history-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.history-actions .file-button, .history-actions .download-button { min-height: 36px; padding: 0 10px; }
 .file-button { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; padding: 0 14px; border: 1px solid #c9d7d1; border-radius: 6px; color: #17493d; background: #fff; font-size: 13px; font-weight: 700; }
 .file-button:not(:disabled):hover { background: #e4efea; }
 .share-button { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 42px; padding: 0 20px; border: 0; border-radius: 6px; color: white; background: #006d59; font-size: 14px; font-weight: 700; }
@@ -115,4 +132,10 @@ h2 { margin: 0; font-family: Georgia, serif; font-size: 28px; font-weight: 400; 
   .compose-footer { align-items: flex-start; flex-direction: column; }
   .compose-actions { width: 100%; }
   .compose-actions button { flex: 1; padding: 0 10px; }
+  .history-heading { align-items: flex-start; flex-direction: column; }
+  .history-search { width: 100%; }
+  .history-list { grid-template-columns: minmax(0, 1fr); }
+  .history-entry { align-items: flex-start; }
+  .history-entry-content { align-items: flex-start; }
+  .history-meta { min-width: 0; }
 }
