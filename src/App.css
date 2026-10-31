@@ -153,6 +153,49 @@ h2 { margin: 0; font-family: Georgia, serif; font-size: 28px; font-weight: 400; 
 .phone-qr svg { display: block; width: min(180px, 100%); height: auto; padding: 8px; border-radius: 4px; background: #fff; }
 .phone-qr code { font-size: 12px; font-weight: 700; overflow-wrap: anywhere; }
 .phone-prompt { width: min(82%, 220px); margin: 0; color: #52635b; font-size: 14px; line-height: 1.5; text-align: center; overflow-wrap: anywhere; }
+.phone-target.pointer-sync { cursor: none; border-color: #007b64; box-shadow: 0 0 0 4px rgb(0 123 100 / 22%), 0 18px 42px rgb(23 73 61 / 18%); }
+.remote-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 18px;
+  padding: 10px 12px;
+  border: 1px solid #b7cbc2;
+  border-left: 3px solid #007b64;
+  border-radius: 6px;
+  color: #17493d;
+  background: #eef5f1;
+  font-size: 13px;
+}
+.remote-control.muted { border-left-color: #a8642b; color: #6c4a23; background: #f7f0e7; }
+.remote-control > span { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.remote-control .file-button { min-height: 32px; padding: 0 10px; font-size: 12px; }
+.remote-control-state { flex: 0 0 auto; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+.pointer-cursor {
+  position: fixed;
+  z-index: 20;
+  padding: 0;
+  margin: -3px 0 0 -3px;
+  color: #17493d;
+  pointer-events: none;
+  filter: drop-shadow(0 2px 5px rgb(23 73 61 / 45%));
+}
+.pointer-cursor svg { display: block; }
+.pointer-click {
+  position: fixed;
+  z-index: 21;
+  width: 36px;
+  height: 36px;
+  margin: -18px 0 0 -18px;
+  border: 2px solid #007b64;
+  border-radius: 50%;
+  pointer-events: none;
+  animation: pointer-click-pulse 480ms ease-out forwards;
+}
+@keyframes pointer-click-pulse {
+  from { opacity: 0.85; transform: scale(0.3); }
+  to { opacity: 0; transform: scale(1.1); }
+}
 .phone-resize-handle {
   position: absolute;
   right: 12px;

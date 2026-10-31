@@ -1,7 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ClipboardEvent, CSSProperties, DragEvent, FormEvent } from 'react';
-import { Clipboard, Copy, Download, ImagePlus, MoveDiagonal2, Search, Send, Trash2, Users, Wifi, WifiOff } from 'lucide-react';
+import type { ClipboardEvent, CSSProperties, DragEvent, FormEvent, PointerEvent as ReactPointerEvent } from 'react';
+import { Clipboard, Copy, Download, ImagePlus, MoveDiagonal2, MousePointerClick, Search, Send, Trash2, Users, Wifi, WifiOff } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
+import PointerCursor from './PointerCursor';
+import { createPointerMessage, createPointerReleaseMessage, isPointerUpdate, toPhonePoint } from './pointerSync';
+import {
+  applyRemoteInput,
+  createClickInput,
+  createScrollInput,
+  isApplyingRemoteInput,
+  isRemoteInputUpdate,
+} from './remoteInput';
 import './App.css';
 
 const MAX_TEXT_BYTES = 60 * 1024;
@@ -26,6 +35,7 @@ type SessionUpdate =
   | { type: 'session'; sessionId: string }
   | { type: 'session-error'; message: string }
   | { type: 'session-left' };
+type ServerInfoUpdate = { type: 'server-info'; lanAddresses: string[] };
 
 const SESSION_STORAGE_KEY = 'phonble-session-id';
 const PHONE_WIDTH_STORAGE_KEY = 'phonble-phone-width';
@@ -33,6 +43,7 @@ const SESSION_ID_PATTERN = /^[a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{3}$/;
 const DEFAULT_PHONE_WIDTH = 280;
 const MIN_PHONE_WIDTH = 200;
 const MAX_PHONE_WIDTH = 360;
+const REMOTE_CONTROL_IDLE_MS = 5000;
 
 const clampPhoneWidth = (width: number) => Math.min(MAX_PHONE_WIDTH, Math.max(MIN_PHONE_WIDTH, width));
 
@@ -47,8 +58,9 @@ const getStoredPhoneWidth = () => {
   }
 };
 
-const createSessionJoinUrl = (sessionId: string) => {
+export const createSessionJoinUrl = (sessionId: string, hostname: string) => {
   const url = new URL(window.location.origin);
+  if (hostname !== url.hostname) url.hostname = hostname;
   url.searchParams.set('session', sessionId);
   return url.toString();
 };
@@ -60,6 +72,11 @@ const isLoopbackHostname = (hostname: string) =>
   hostname === '[::1]' ||
   hostname === '0.0.0.0' ||
   hostname.startsWith('127.');
+
+export const getJoinHostname = (lanAddresses: string[]) => {
+  const hostname = window.location.hostname;
+  return isLoopbackHostname(hostname) ? lanAddresses[0] ?? hostname : hostname;
+};
 
 const formatSessionIdInput = (value: string) => {
   const characters = value.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10);
@@ -105,6 +122,16 @@ const isSessionUpdate = (value: unknown): value is SessionUpdate => {
   if (update.type === 'session') return typeof update.sessionId === 'string';
   if (update.type === 'session-error') return typeof update.message === 'string';
   return update.type === 'session-left';
+};
+
+const isServerInfoUpdate = (value: unknown): value is ServerInfoUpdate => {
+  if (!value || typeof value !== 'object') return false;
+  const update = value as Record<string, unknown>;
+  return (
+    update.type === 'server-info' &&
+    Array.isArray(update.lanAddresses) &&
+    update.lanAddresses.every((address) => typeof address === 'string')
+  );
 };
 
 const isHistoryItem = (value: unknown): value is HistoryItem => {
@@ -186,6 +213,7 @@ const App = () => {
   const [deviceName, setDeviceName] = useState(getStoredDeviceName);
   const [nameDraft, setNameDraft] = useState(getStoredDeviceName);
   const [sessionId, setSessionId] = useState('');
+  const [lanAddresses, setLanAddresses] = useState<string[]>([]);
   const [sessionDraft, setSessionDraft] = useState('');
   const [sessionPending, setSessionPending] = useState(false);
   const [deviceId, setDeviceId] = useState('');
@@ -193,15 +221,77 @@ const App = () => {
   const [phoneWidth, setPhoneWidth] = useState(getStoredPhoneWidth);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historySearch, setHistorySearch] = useState('');
+  const [pointerOnPhone, setPointerOnPhone] = useState(false);
+  const [remotePointer, setRemotePointer] = useState<{ x: number; y: number; deviceId: string } | null>(null);
+  const [remoteControl, setRemoteControl] = useState<{ deviceId: string; name: string; muted: boolean } | null>(null);
+  const [remoteClick, setRemoteClick] = useState<{ id: number; x: number; y: number } | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const joiningStoredSessionRef = useRef(false);
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
   const resizeStartRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+  const phoneAreaRef = useRef<HTMLElement | null>(null);
+  const pointerSyncActiveRef = useRef(false);
+  const remoteControlRef = useRef<{ deviceId: string; name: string; muted: boolean } | null>(null);
+  const remoteControlTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const remoteClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const remoteClickSequenceRef = useRef(0);
+  const participantsRef = useRef<Participant[]>([]);
   const draftBytes = new TextEncoder().encode(draft).length;
   const sharedText = sharedItem.type === 'text' ? sharedItem.text : '';
   const sharedImage = sharedItem.type === 'image' ? sharedItem : null;
   const hasSharedItem = Boolean(sharedText || sharedImage);
-  const phoneHostIsLocal = isLoopbackHostname(window.location.hostname);
-  const phoneJoinUrl = sessionId && !phoneHostIsLocal ? createSessionJoinUrl(sessionId) : '';
+  const phoneJoinHostname = getJoinHostname(lanAddresses);
+  const phoneJoinUrl = sessionId ? createSessionJoinUrl(sessionId, phoneJoinHostname) : '';
+  const phoneJoinUrlIsLocal = isLoopbackHostname(phoneJoinHostname);
+  const hasOtherParticipant = participants.some((participant) => participant.id !== deviceId);
+  const canSyncPointer = connection === 'connected' && Boolean(sessionId) && hasOtherParticipant;
+  const visibleRemotePointer =
+    remotePointer && participants.some((participant) => participant.id === remotePointer.deviceId)
+      ? remotePointer
+      : null;
+
+  useEffect(() => {
+    participantsRef.current = participants;
+  }, [participants]);
+
+  useEffect(() => {
+    pointerSyncActiveRef.current = canSyncPointer && pointerOnPhone;
+  }, [canSyncPointer, pointerOnPhone]);
+
+  useEffect(() => {
+    const area = phoneAreaRef.current;
+    if (!area) return;
+    let frame = 0;
+    let pendingDelta = 0;
+    let pendingPoint: { x: number; y: number } | null = null;
+
+    const flushScroll = () => {
+      frame = 0;
+      const point = pendingPoint;
+      const dy = pendingDelta;
+      pendingDelta = 0;
+      const socket = socketRef.current;
+      if (!point || !dy || socket?.readyState !== WebSocket.OPEN) return;
+      socket.send(JSON.stringify(createScrollInput(point.x, point.y, dy)));
+    };
+
+    const handleWheel = (event: WheelEvent) => {
+      if (!pointerSyncActiveRef.current || !event.deltaY) return;
+      const point = toPhonePoint(area.getBoundingClientRect(), event.clientX, event.clientY);
+      if (!point) return;
+      event.preventDefault();
+      const step = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 400 : 1;
+      pendingPoint = point;
+      pendingDelta += event.deltaY * step;
+      if (!frame) frame = window.requestAnimationFrame(flushScroll);
+    };
+
+    area.addEventListener('wheel', handleWheel, { passive: false });
+    return () => {
+      area.removeEventListener('wheel', handleWheel);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, []);
 
   const updatePhoneWidth = (width: number) => {
     const nextWidth = clampPhoneWidth(width);
@@ -228,6 +318,17 @@ const App = () => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${protocol}//${window.location.host}/ws`;
 
+    const clearRemoteControl = () => {
+      if (remoteControlTimerRef.current) {
+        clearTimeout(remoteControlTimerRef.current);
+        remoteControlTimerRef.current = null;
+      }
+      if (remoteControlRef.current) {
+        remoteControlRef.current = null;
+        setRemoteControl(null);
+      }
+    };
+
     const connect = () => {
       const socket = new WebSocket(url);
       socketRef.current = socket;
@@ -249,6 +350,7 @@ const App = () => {
         try {
           const update: unknown = JSON.parse(event.data);
           if (isSessionUpdate(update)) {
+            clearRemoteControl();
             if (update.type === 'session') {
               joiningStoredSessionRef.current = false;
               setSessionId(update.sessionId);
@@ -292,6 +394,7 @@ const App = () => {
           }
           if (isParticipantUpdate(update)) {
             setDeviceId(update.deviceId);
+            participantsRef.current = update.participants;
             setParticipants(update.participants);
             return;
           }
@@ -306,6 +409,38 @@ const App = () => {
             ]);
             return;
           }
+          if (isServerInfoUpdate(update)) {
+            setLanAddresses(update.lanAddresses);
+            return;
+          }
+          if (isPointerUpdate(update)) {
+            setRemotePointer(update.active ? { x: update.x, y: update.y, deviceId: update.deviceId } : null);
+            if (!update.active && remoteControlRef.current?.deviceId === update.deviceId) clearRemoteControl();
+            return;
+          }
+          if (isRemoteInputUpdate(update)) {
+            const name = participantsRef.current.find((participant) => participant.id === update.deviceId)?.name ?? 'another device';
+            const current = remoteControlRef.current;
+            const muted = current?.deviceId === update.deviceId ? current.muted : false;
+            if (!current || current.deviceId !== update.deviceId || current.name !== name || current.muted !== muted) {
+              const next = { deviceId: update.deviceId, name, muted };
+              remoteControlRef.current = next;
+              setRemoteControl(next);
+            }
+            if (remoteControlTimerRef.current) clearTimeout(remoteControlTimerRef.current);
+            remoteControlTimerRef.current = setTimeout(clearRemoteControl, REMOTE_CONTROL_IDLE_MS);
+            if (!muted) applyRemoteInput(update);
+            if (!muted && update.kind === 'click') {
+              remoteClickSequenceRef.current += 1;
+              setRemoteClick({ id: remoteClickSequenceRef.current, x: update.x, y: update.y });
+              if (remoteClickTimerRef.current) clearTimeout(remoteClickTimerRef.current);
+              remoteClickTimerRef.current = setTimeout(() => {
+                remoteClickTimerRef.current = null;
+                setRemoteClick(null);
+              }, 480);
+            }
+            return;
+          }
           if (!isSharedUpdate(update)) throw new Error('Invalid shared update');
           setSharedItem(update);
         } catch {
@@ -314,6 +449,7 @@ const App = () => {
       };
       socket.onclose = () => {
         if (!active) return;
+        clearRemoteControl();
         setSessionPending(false);
         setSessionId('');
         setParticipants([]);
@@ -329,9 +465,53 @@ const App = () => {
     return () => {
       active = false;
       clearTimeout(retryTimer);
+      if (remoteControlTimerRef.current) clearTimeout(remoteControlTimerRef.current);
+      if (remoteClickTimerRef.current) clearTimeout(remoteClickTimerRef.current);
       socketRef.current?.close();
     };
   }, []);
+
+  const movePointerToPhone = (event: ReactPointerEvent<HTMLElement>) => {
+    const point = toPhonePoint(event.currentTarget.getBoundingClientRect(), event.clientX, event.clientY);
+    if (!point) return;
+    const lastPointer = lastPointerRef.current;
+    if (lastPointer?.x === point.x && lastPointer.y === point.y) return;
+    lastPointerRef.current = point;
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify(createPointerMessage(point.x, point.y)));
+    }
+  };
+
+  const startPointerSync = (event: ReactPointerEvent<HTMLElement>) => {
+    if (!canSyncPointer) return;
+    setPointerOnPhone(true);
+    movePointerToPhone(event);
+  };
+
+  const forwardClickToPhone = (event: ReactPointerEvent<HTMLElement>) => {
+    if (isApplyingRemoteInput() || !pointerOnPhone || event.button !== 0) return;
+    if (event.target instanceof Element && event.target.closest('.phone-resize-handle')) return;
+    const socket = socketRef.current;
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    const point = toPhonePoint(event.currentTarget.getBoundingClientRect(), event.clientX, event.clientY);
+    if (!point) return;
+    socket.send(JSON.stringify(createClickInput(point.x, point.y)));
+  };
+
+  const stopPointerSync = () => {
+    if (!pointerOnPhone) return;
+    setPointerOnPhone(false);
+    lastPointerRef.current = null;
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify(createPointerReleaseMessage()));
+    }
+  };
+
+  useEffect(() => {
+    if (canSyncPointer || !pointerOnPhone) return;
+    setPointerOnPhone(false);
+    lastPointerRef.current = null;
+  }, [canSyncPointer, pointerOnPhone]);
 
   const shareText = (text: string) => {
     if (new TextEncoder().encode(text).length > MAX_TEXT_BYTES) {
@@ -560,6 +740,34 @@ const App = () => {
           <span className="workspace-type">TEXT + IMAGE</span>
         </div>
 
+        {remoteControl ? (
+          <div className={`remote-control${remoteControl.muted ? ' muted' : ''}`} role="status" aria-live="polite">
+            <MousePointerClick size={18} aria-hidden="true" />
+            <span>
+              {remoteControl.muted
+                ? `${remoteControl.name} is pointing at this device; input paused.`
+                : `${remoteControl.name} is scrolling and clicking this device.`}
+            </span>
+            {remoteControl.muted ? (
+              <span className="remote-control-state">Paused</span>
+            ) : (
+              <button
+                type="button"
+                className="file-button"
+                onClick={() => {
+                  const current = remoteControlRef.current;
+                  if (!current) return;
+                  const next = { ...current, muted: true };
+                  remoteControlRef.current = next;
+                  setRemoteControl(next);
+                }}
+              >
+                Release control
+              </button>
+            )}
+          </div>
+        ) : null}
+
         <section className="session-bar" aria-label="Session">
           {sessionId ? (
             <>
@@ -778,15 +986,28 @@ const App = () => {
         </section>
         <div className="footnote" aria-live="polite">{notice || 'One shared clipboard across connected devices.'}</div>
       </section>
-      <aside className="phone-target" aria-label="Phone placement area">
+      <aside
+        ref={phoneAreaRef}
+        className={`phone-target${pointerOnPhone ? ' pointer-sync' : ''}`}
+        aria-label="Phone placement area"
+        onPointerEnter={startPointerSync}
+        onPointerMove={(event) => {
+          if (pointerOnPhone) movePointerToPhone(event);
+        }}
+        onPointerLeave={stopPointerSync}
+        onPointerDown={forwardClickToPhone}
+      >
         {phoneJoinUrl ? (
           <div className="phone-qr">
             <p className="eyebrow">Scan to join</p>
             <QRCodeSVG value={phoneJoinUrl} size={180} level="M" title={`Join session ${sessionId}`} />
             <code>{sessionId}</code>
+            {phoneJoinUrlIsLocal ? (
+              <p className="phone-prompt">
+                This computer has no network address, so the QR only works on this computer.
+              </p>
+            ) : null}
           </div>
-        ) : phoneHostIsLocal && sessionId ? (
-          <p className="phone-prompt">Open Phonble using this computer&apos;s network address to make a phone QR.</p>
         ) : (
           <p className="phone-prompt">Create or join a session to connect your phone.</p>
         )}
@@ -805,6 +1026,7 @@ const App = () => {
           }}
           onPointerDown={(event) => {
             event.preventDefault();
+            event.stopPropagation();
             event.currentTarget.setPointerCapture?.(event.pointerId);
             resizeStartRef.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: phoneWidth };
           }}
@@ -825,6 +1047,18 @@ const App = () => {
         </div>
       </aside>
       </div>
+      {visibleRemotePointer ? (
+        <PointerCursor x={visibleRemotePointer.x} y={visibleRemotePointer.y} />
+      ) : null}
+      {remoteClick ? (
+        <div
+          key={remoteClick.id}
+          className="pointer-click"
+          style={{ left: `${remoteClick.x * 100}%`, top: `${remoteClick.y * 100}%` }}
+          data-testid="remote-click"
+          aria-hidden="true"
+        />
+      ) : null}
     </main>
   );
 };

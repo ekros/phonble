@@ -65,5 +65,15 @@ UI:
 
 ## 0.6 Pointer sync
 
+- The pointer sync feature allows us to have a unified experience between connected devices.
 - Once defined, the pointer is "teleported" to the phone when it enters the defined area.
-  -> Using this feature as a base, I want to perform actions in the app running in the phone (TBD)
+- If the pointer leaves the phone viewport, it returns to the controller's viewport.
+- The pointer moves freely through the phone app. Nothing more happens yet.
+
+## 0.7 Basic remote interactions
+
+- when the cursor is in the remote phone we can scroll and click things inside the webapp context.
+
+## 0.x future
+
+- Using this feature as a base, I want to perform actions in the app running in the phone (TBD)
