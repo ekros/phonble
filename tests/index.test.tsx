@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from '@rstest/core';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import App from '../src/App';
 
 class MockWebSocket {
@@ -50,6 +50,7 @@ afterEach(() => {
   cleanup();
   MockWebSocket.lastInstance = null;
   window.localStorage.clear();
+  window.happyDOM.setURL('http://localhost:3000/');
   Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: originalWebSocket });
 });
 
@@ -81,6 +82,62 @@ test('creates a session and joins an existing session by ID', async () => {
   fireEvent.change(screen.getByLabelText('Session ID'), { target: { value: 'phone00001' } });
   fireEvent.click(screen.getByRole('button', { name: 'Join' }));
   expect(MockWebSocket.lastInstance?.sent).toContain(JSON.stringify({ type: 'join-session', sessionId: 'pho-ne00-001' }));
+});
+
+test('joins the session from the URL before a saved session', async () => {
+  window.localStorage.setItem('phonble-session-id', 'old-defg-hij');
+  window.history.replaceState({}, '', '/?session=abc-defg-hij');
+  Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: MockWebSocket });
+  render(<App />);
+  await waitFor(() => expect(MockWebSocket.lastInstance).not.toBeNull());
+
+  act(() => MockWebSocket.lastInstance?.open());
+
+  expect(MockWebSocket.lastInstance?.sent).toContain(JSON.stringify({ type: 'join-session', sessionId: 'abc-defg-hij' }));
+  expect(MockWebSocket.lastInstance?.sent).not.toContain(JSON.stringify({ type: 'join-session', sessionId: 'old-defg-hij' }));
+});
+
+test('shows a join QR when the session is opened from a LAN address', async () => {
+  window.happyDOM.setURL('http://192.168.1.25:3000/');
+  Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: MockWebSocket });
+  await renderConnected();
+
+  expect(screen.getByTitle('Join session abc-defg-hij')).toBeInTheDocument();
+  expect(within(screen.getByLabelText('Phone placement area')).getByText('abc-defg-hij')).toBeInTheDocument();
+});
+
+test('explains why a localhost session has no phone QR', async () => {
+  Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: MockWebSocket });
+  await renderConnected();
+
+  expect(screen.getByText("Open Phonble using this computer's network address to make a phone QR.")).toBeInTheDocument();
+  expect(screen.queryByTitle('Join session abc-defg-hij')).not.toBeInTheDocument();
+});
+
+test('shows a prompt before a session is active', async () => {
+  Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: MockWebSocket });
+  render(<App />);
+
+  expect(screen.getByText('Create or join a session to connect your phone.')).toBeInTheDocument();
+});
+
+test('resizes the phone target with the keyboard and persists its width', async () => {
+  Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: MockWebSocket });
+  const { unmount } = render(<App />);
+  const resizeControl = screen.getByRole('slider', { name: 'Phone area width' });
+  const layout = resizeControl.closest('.app-layout');
+
+  expect(resizeControl).toHaveAttribute('aria-valuenow', '280');
+  expect(layout).toHaveStyle({ '--phone-height': '560px' });
+  fireEvent.keyDown(resizeControl, { key: 'ArrowRight' });
+
+  expect(resizeControl).toHaveAttribute('aria-valuenow', '290');
+  expect(layout).toHaveStyle({ '--phone-height': '580px' });
+  expect(window.localStorage.getItem('phonble-phone-width')).toBe('290');
+  unmount();
+  render(<App />);
+
+  expect(screen.getByRole('slider', { name: 'Phone area width' })).toHaveAttribute('aria-valuenow', '290');
 });
 
 test('sends an image selected with the file picker', async () => {

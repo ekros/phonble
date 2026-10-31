@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ClipboardEvent, DragEvent, FormEvent } from 'react';
-import { Clipboard, Copy, Download, ImagePlus, Search, Send, Trash2, Users, Wifi, WifiOff } from 'lucide-react';
+import type { ClipboardEvent, CSSProperties, DragEvent, FormEvent } from 'react';
+import { Clipboard, Copy, Download, ImagePlus, MoveDiagonal2, Search, Send, Trash2, Users, Wifi, WifiOff } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import './App.css';
 
 const MAX_TEXT_BYTES = 60 * 1024;
@@ -27,7 +28,38 @@ type SessionUpdate =
   | { type: 'session-left' };
 
 const SESSION_STORAGE_KEY = 'phonble-session-id';
+const PHONE_WIDTH_STORAGE_KEY = 'phonble-phone-width';
 const SESSION_ID_PATTERN = /^[a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{3}$/;
+const DEFAULT_PHONE_WIDTH = 280;
+const MIN_PHONE_WIDTH = 200;
+const MAX_PHONE_WIDTH = 360;
+
+const clampPhoneWidth = (width: number) => Math.min(MAX_PHONE_WIDTH, Math.max(MIN_PHONE_WIDTH, width));
+
+const getStoredPhoneWidth = () => {
+  try {
+    const storedWidth = window.localStorage.getItem(PHONE_WIDTH_STORAGE_KEY);
+    if (!storedWidth) return DEFAULT_PHONE_WIDTH;
+    const width = Number(storedWidth);
+    return Number.isFinite(width) ? clampPhoneWidth(width) : DEFAULT_PHONE_WIDTH;
+  } catch {
+    return DEFAULT_PHONE_WIDTH;
+  }
+};
+
+const createSessionJoinUrl = (sessionId: string) => {
+  const url = new URL(window.location.origin);
+  url.searchParams.set('session', sessionId);
+  return url.toString();
+};
+
+const isLoopbackHostname = (hostname: string) =>
+  hostname === 'localhost' ||
+  hostname.endsWith('.localhost') ||
+  hostname === '::1' ||
+  hostname === '[::1]' ||
+  hostname === '0.0.0.0' ||
+  hostname.startsWith('127.');
 
 const formatSessionIdInput = (value: string) => {
   const characters = value.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10);
@@ -158,14 +190,37 @@ const App = () => {
   const [sessionPending, setSessionPending] = useState(false);
   const [deviceId, setDeviceId] = useState('');
   const [participants, setParticipants] = useState<Participant[]>([]);
+  const [phoneWidth, setPhoneWidth] = useState(getStoredPhoneWidth);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historySearch, setHistorySearch] = useState('');
   const socketRef = useRef<WebSocket | null>(null);
   const joiningStoredSessionRef = useRef(false);
+  const resizeStartRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
   const draftBytes = new TextEncoder().encode(draft).length;
   const sharedText = sharedItem.type === 'text' ? sharedItem.text : '';
   const sharedImage = sharedItem.type === 'image' ? sharedItem : null;
   const hasSharedItem = Boolean(sharedText || sharedImage);
+  const phoneHostIsLocal = isLoopbackHostname(window.location.hostname);
+  const phoneJoinUrl = sessionId && !phoneHostIsLocal ? createSessionJoinUrl(sessionId) : '';
+
+  const updatePhoneWidth = (width: number) => {
+    const nextWidth = clampPhoneWidth(width);
+    setPhoneWidth(nextWidth);
+    try {
+      window.localStorage.setItem(PHONE_WIDTH_STORAGE_KEY, String(nextWidth));
+    } catch {
+      // The target remains resizable for this page load.
+    }
+  };
+
+  const resizePhoneWithKeyboard = (key: string) => {
+    if (key === 'ArrowRight' || key === 'ArrowUp') updatePhoneWidth(phoneWidth + 10);
+    else if (key === 'ArrowLeft' || key === 'ArrowDown') updatePhoneWidth(phoneWidth - 10);
+    else if (key === 'Home') updatePhoneWidth(MIN_PHONE_WIDTH);
+    else if (key === 'End') updatePhoneWidth(MAX_PHONE_WIDTH);
+    else return false;
+    return true;
+  };
 
   useEffect(() => {
     let active = true;
@@ -180,11 +235,14 @@ const App = () => {
         setConnection('connected');
         const savedName = getStoredDeviceName();
         if (savedName) socket.send(JSON.stringify({ type: 'set-name', name: savedName }));
+        const requestedSessionId = new URLSearchParams(window.location.search).get('session') ?? '';
+        const hasRequestedSession = SESSION_ID_PATTERN.test(requestedSessionId);
         const savedSessionId = getStoredSessionId();
-        if (SESSION_ID_PATTERN.test(savedSessionId)) {
-          joiningStoredSessionRef.current = true;
+        const sessionToJoin = hasRequestedSession ? requestedSessionId : savedSessionId;
+        if (SESSION_ID_PATTERN.test(sessionToJoin)) {
+          joiningStoredSessionRef.current = !hasRequestedSession;
           setSessionPending(true);
-          socket.send(JSON.stringify({ type: 'join-session', sessionId: savedSessionId }));
+          socket.send(JSON.stringify({ type: 'join-session', sessionId: sessionToJoin }));
         }
       };
       socket.onmessage = (event) => {
@@ -486,6 +544,13 @@ const App = () => {
         </div>
       </header>
 
+      <div
+        className="app-layout"
+        style={{
+          gridTemplateColumns: `minmax(0, 1fr) ${phoneWidth}px`,
+          '--phone-height': `${phoneWidth * 2}px`,
+        } as CSSProperties}
+      >
       <section className="workspace" aria-label="Shared clipboard">
         <div className="workspace-heading">
           <div>
@@ -713,6 +778,53 @@ const App = () => {
         </section>
         <div className="footnote" aria-live="polite">{notice || 'One shared clipboard across connected devices.'}</div>
       </section>
+      <aside className="phone-target" aria-label="Phone placement area">
+        {phoneJoinUrl ? (
+          <div className="phone-qr">
+            <p className="eyebrow">Scan to join</p>
+            <QRCodeSVG value={phoneJoinUrl} size={180} level="M" title={`Join session ${sessionId}`} />
+            <code>{sessionId}</code>
+          </div>
+        ) : phoneHostIsLocal && sessionId ? (
+          <p className="phone-prompt">Open Phonble using this computer&apos;s network address to make a phone QR.</p>
+        ) : (
+          <p className="phone-prompt">Create or join a session to connect your phone.</p>
+        )}
+        <div
+          className="phone-resize-handle"
+          role="slider"
+          aria-label="Phone area width"
+          aria-orientation="horizontal"
+          aria-valuemin={MIN_PHONE_WIDTH}
+          aria-valuemax={MAX_PHONE_WIDTH}
+          aria-valuenow={phoneWidth}
+          aria-valuetext={`${phoneWidth} pixels wide`}
+          tabIndex={0}
+          onKeyDown={(event) => {
+            if (resizePhoneWithKeyboard(event.key)) event.preventDefault();
+          }}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+            resizeStartRef.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: phoneWidth };
+          }}
+          onPointerMove={(event) => {
+            const resizeStart = resizeStartRef.current;
+            if (resizeStart?.pointerId === event.pointerId) {
+              updatePhoneWidth(resizeStart.startWidth + event.clientX - resizeStart.startX);
+            }
+          }}
+          onPointerUp={(event) => {
+            if (resizeStartRef.current?.pointerId === event.pointerId) resizeStartRef.current = null;
+          }}
+          onPointerCancel={() => {
+            resizeStartRef.current = null;
+          }}
+        >
+          <MoveDiagonal2 size={15} aria-hidden="true" />
+        </div>
+      </aside>
+      </div>
     </main>
   );
 };

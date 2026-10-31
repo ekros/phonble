@@ -59,6 +59,9 @@ UI:
 
 - Phone positioning
   - A rectangle can be resized to define the boundaries of the phone that will be positioned on the screen.
+  - By default it is positioned in the right side with the typical size of a phone.
+  - In this mode, a QR with the session id appears in the middle of the phone area.
+  - In this mode, the current elements of the UI are align to the left, leaving space for the phone.
 
 ## 0.6 Pointer sync
 
