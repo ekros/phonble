@@ -74,6 +74,22 @@ UI:
 
 - when the cursor is in the remote phone we can scroll and click things inside the webapp context.
 
+## 0.8 Clipboard API
+
+- Uses clipboardchange to autodetect changes in clipboard. The item is automatically sent if supported.
+
+## 0.9 Web Locks API
+
+- Exactly one controller owns the phone (no two devices fighting), multi-tab coordination.
+
+## 0.10 Notifications
+
+- phone notifications shown as desktop notifications (notifications api, service worker + badging api)
+
+## 0.11 Gzip compression
+
+- Compression Streams API: Gzip payloads before base64 → the 5 MB image budget goes 3–4× further over the relay.
+
 ## 0.x future
 
 - Using this feature as a base, I want to perform actions in the app running in the phone (TBD)

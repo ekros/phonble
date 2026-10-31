@@ -75,6 +75,12 @@ h1 { margin: 0; font-family: Georgia, serif; font-size: clamp(42px, 5vw, 66px); 
 .participant-indicator { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: #258467; }
 .self-label { color: #77877f; font-size: 11px; white-space: nowrap; }
 .participant-empty { color: #74857d; font-size: 13px; }
+.haptics-toggle { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; color: #344840; font-size: 13px; cursor: pointer; }
+.haptics-toggle input { width: 16px; height: 16px; margin: 0; accent-color: #007b64; cursor: pointer; }
+.haptics-toggle input:focus-visible { outline: 2px solid #007b64; outline-offset: 2px; }
+.haptics-toggle.unsupported { color: #7a8982; cursor: not-allowed; }
+.haptics-toggle.unsupported input { cursor: not-allowed; }
+.haptics-arm { min-height: 32px; padding: 0 10px; font-size: 12px; border-color: #b7cbc2; background: #eef5f1; }
 
 .panes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid #bacbc4; border-bottom: 1px solid #bacbc4; }
 .pane { display: flex; flex-direction: column; min-width: 0; min-height: 405px; padding: 32px 32px 24px 0; }
@@ -152,6 +158,8 @@ h2 { margin: 0; font-family: Georgia, serif; font-size: 28px; font-weight: 400; 
 .phone-qr .eyebrow { margin: 0; }
 .phone-qr svg { display: block; width: min(180px, 100%); height: auto; padding: 8px; border-radius: 4px; background: #fff; }
 .phone-qr code { font-size: 12px; font-weight: 700; overflow-wrap: anywhere; }
+.phone-invite { display: grid; justify-items: center; gap: 10px; width: min(82%, 220px); color: #17493d; text-align: center; }
+.phone-invite .phone-prompt { width: 100%; color: inherit; font-weight: 600; }
 .phone-prompt { width: min(82%, 220px); margin: 0; color: #52635b; font-size: 14px; line-height: 1.5; text-align: center; overflow-wrap: anywhere; }
 .phone-target.pointer-sync { cursor: none; border-color: #007b64; box-shadow: 0 0 0 4px rgb(0 123 100 / 22%), 0 18px 42px rgb(23 73 61 / 18%); }
 .remote-control {

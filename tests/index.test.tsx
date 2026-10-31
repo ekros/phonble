@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from '@rstest/core';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import App, { createSessionJoinUrl, getJoinHostname } from '../src/App';
+import { HANDOFF_ENTER_PATTERN, HANDOFF_LEAVE_PATTERN } from '../src/haptics';
 
 class MockWebSocket {
   static OPEN = 1;
@@ -58,12 +59,43 @@ const inputMessages = () =>
     .map((message) => JSON.parse(message) as { type: string })
     .filter((update) => update.type === 'input');
 
+const vibrationCalls: (number | number[])[] = [];
+
+const stubVibration = () => {
+  vibrationCalls.length = 0;
+  Object.defineProperty(window.navigator, 'vibrate', {
+    configurable: true,
+    value: (pattern: number | number[]) => {
+      vibrationCalls.push(pattern);
+      return true;
+    },
+  });
+};
+
+const renderWithOtherDevice = async () => {
+  Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: MockWebSocket });
+  render(<App />);
+  await waitFor(() => expect(MockWebSocket.lastInstance).not.toBeNull());
+  act(() => {
+    MockWebSocket.lastInstance?.open();
+    MockWebSocket.lastInstance?.receive({ type: 'session', sessionId: 'abc-defg-hij' });
+    MockWebSocket.lastInstance?.receive({
+      type: 'participants',
+      deviceId: 'phone',
+      participants: [{ id: 'laptop', name: 'Laptop' }, { id: 'phone', name: 'Phone' }],
+    });
+  });
+};
+
 afterEach(() => {
   cleanup();
   MockWebSocket.lastInstance = null;
+  vibrationCalls.length = 0;
   window.localStorage.clear();
   window.happyDOM.setURL('http://localhost:3000/');
   Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: originalWebSocket });
+  delete (window.navigator as { vibrate?: unknown }).vibrate;
+  delete (window.navigator as { userActivation?: unknown }).userActivation;
 });
 
 test('renders a received image with a download link', async () => {
@@ -268,6 +300,37 @@ test('keeps the pointer on this device when it is alone in the session', async (
 
   expect(pointerMessages()).toEqual([]);
   expect(area).not.toHaveClass('pointer-sync');
+});
+
+test('replaces the join QR with a pointer invitation once the phone connects', async () => {
+  Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: MockWebSocket });
+  const { container } = render(<App />);
+  await waitFor(() => expect(MockWebSocket.lastInstance).not.toBeNull());
+  act(() => {
+    MockWebSocket.lastInstance?.open();
+    MockWebSocket.lastInstance?.receive({ type: 'session', sessionId: 'abc-defg-hij' });
+    MockWebSocket.lastInstance?.receive({
+      type: 'participants',
+      deviceId: 'laptop',
+      participants: [{ id: 'laptop', name: 'Laptop' }],
+    });
+  });
+
+  expect(container.querySelector('.phone-qr')).not.toBeNull();
+  expect(screen.getByText('Scan to join')).toBeTruthy();
+
+  act(() => MockWebSocket.lastInstance?.receive({
+    type: 'participants',
+    deviceId: 'laptop',
+    participants: [{ id: 'laptop', name: 'Laptop' }, { id: 'phone', name: 'Phone' }],
+  }));
+
+  expect(container.querySelector('.phone-qr')).toBeNull();
+  expect(screen.queryByText('Scan to join')).toBeNull();
+  expect(
+    within(screen.getByLabelText('Phone placement area'))
+      .getByText('Move the cursor into this area to interact with the phone.'),
+  ).toBeTruthy();
 });
 
 test('forwards clicks made inside the phone area to the other devices', async () => {
@@ -503,4 +566,88 @@ test('rejects unsupported image types and files over 5 MB', async () => {
   });
   expect(screen.getByText('Image is too large. Maximum size is 5 MB.')).toBeInTheDocument();
   expect(MockWebSocket.lastInstance?.sent).toHaveLength(0);
+});
+
+test('vibrates when another device pointer enters and leaves this screen', async () => {
+  stubVibration();
+  await renderWithOtherDevice();
+
+  act(() => MockWebSocket.lastInstance?.receive({ type: 'pointer', deviceId: 'laptop', active: true, x: 0.2, y: 0.3 }));
+  expect(vibrationCalls).toEqual([HANDOFF_ENTER_PATTERN]);
+
+  act(() => MockWebSocket.lastInstance?.receive({ type: 'pointer', deviceId: 'laptop', active: true, x: 0.4, y: 0.5 }));
+  expect(vibrationCalls).toEqual([HANDOFF_ENTER_PATTERN]);
+
+  act(() => MockWebSocket.lastInstance?.receive({ type: 'pointer', deviceId: 'laptop', active: false, x: 0, y: 0 }));
+  expect(vibrationCalls).toEqual([HANDOFF_ENTER_PATTERN, HANDOFF_LEAVE_PATTERN]);
+});
+
+test('stops handoff vibration when it is turned off', async () => {
+  stubVibration();
+  await renderWithOtherDevice();
+
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Vibrate on handoff' }));
+  expect(window.localStorage.getItem('phonble-handoff-vibration')).toBe('off');
+
+  vibrationCalls.length = 0;
+  act(() => MockWebSocket.lastInstance?.receive({ type: 'pointer', deviceId: 'laptop', active: true, x: 0.2, y: 0.3 }));
+  expect(vibrationCalls).toEqual([]);
+});
+
+test('keeps the handoff vibration setting between page loads', async () => {
+  window.localStorage.setItem('phonble-handoff-vibration', 'off');
+  stubVibration();
+  await renderWithOtherDevice();
+
+  expect(screen.getByRole('checkbox', { name: 'Vibrate on handoff' })).not.toBeChecked();
+
+  act(() => MockWebSocket.lastInstance?.receive({ type: 'pointer', deviceId: 'laptop', active: true, x: 0.2, y: 0.3 }));
+  expect(vibrationCalls).toEqual([]);
+});
+
+test('disables the handoff vibration toggle when the browser cannot vibrate', async () => {
+  await renderWithOtherDevice();
+
+  expect(screen.getByRole('checkbox', { name: 'Vibrate on handoff' })).toBeDisabled();
+});
+
+const stubMissingActivation = () => {
+  Object.defineProperty(window.navigator, 'userActivation', {
+    configurable: true,
+    value: { hasBeenActive: false },
+  });
+};
+
+test('asks for a tap before relying on haptics without user activation', async () => {
+  stubVibration();
+  stubMissingActivation();
+  await renderWithOtherDevice();
+
+  const arm = screen.getByRole('button', { name: 'Tap to enable vibration' });
+  fireEvent.click(arm);
+
+  expect(vibrationCalls).toEqual([HANDOFF_ENTER_PATTERN]);
+  expect(screen.queryByRole('button', { name: 'Tap to enable vibration' })).toBeNull();
+});
+
+test('stops asking for a tap after any interaction with the page', async () => {
+  stubVibration();
+  stubMissingActivation();
+  await renderWithOtherDevice();
+
+  expect(screen.getByRole('button', { name: 'Tap to enable vibration' })).toBeInTheDocument();
+  fireEvent.pointerDown(document.body);
+
+  expect(screen.queryByRole('button', { name: 'Tap to enable vibration' })).toBeNull();
+});
+
+test('confirms the setting with a short vibration when it is turned on', async () => {
+  window.localStorage.setItem('phonble-handoff-vibration', 'off');
+  stubVibration();
+  await renderWithOtherDevice();
+
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Vibrate on handoff' }));
+
+  expect(vibrationCalls).toEqual([HANDOFF_ENTER_PATTERN]);
+  expect(window.localStorage.getItem('phonble-handoff-vibration')).toBe('on');
 });

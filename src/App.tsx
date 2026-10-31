@@ -3,6 +3,14 @@ import type { ClipboardEvent, CSSProperties, DragEvent, FormEvent, PointerEvent 
 import { Clipboard, Copy, Download, ImagePlus, MoveDiagonal2, MousePointerClick, Search, Send, Trash2, Users, Wifi, WifiOff } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import PointerCursor from './PointerCursor';
+import {
+  canVibrate,
+  getHandoffDirection,
+  HANDOFF_ENTER_PATTERN,
+  HANDOFF_LEAVE_PATTERN,
+  needsUserGesture,
+  vibrate,
+} from './haptics';
 import { createPointerMessage, createPointerReleaseMessage, isPointerUpdate, toPhonePoint } from './pointerSync';
 import {
   applyRemoteInput,
@@ -39,6 +47,7 @@ type ServerInfoUpdate = { type: 'server-info'; lanAddresses: string[] };
 
 const SESSION_STORAGE_KEY = 'phonble-session-id';
 const PHONE_WIDTH_STORAGE_KEY = 'phonble-phone-width';
+const HANDOFF_VIBRATION_STORAGE_KEY = 'phonble-handoff-vibration';
 const SESSION_ID_PATTERN = /^[a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{3}$/;
 const DEFAULT_PHONE_WIDTH = 280;
 const MIN_PHONE_WIDTH = 200;
@@ -55,6 +64,14 @@ const getStoredPhoneWidth = () => {
     return Number.isFinite(width) ? clampPhoneWidth(width) : DEFAULT_PHONE_WIDTH;
   } catch {
     return DEFAULT_PHONE_WIDTH;
+  }
+};
+
+const getStoredHandoffVibrationEnabled = () => {
+  try {
+    return window.localStorage.getItem(HANDOFF_VIBRATION_STORAGE_KEY) !== 'off';
+  } catch {
+    return true;
   }
 };
 
@@ -223,6 +240,9 @@ const App = () => {
   const [historySearch, setHistorySearch] = useState('');
   const [pointerOnPhone, setPointerOnPhone] = useState(false);
   const [remotePointer, setRemotePointer] = useState<{ x: number; y: number; deviceId: string } | null>(null);
+  const [handoffVibration, setHandoffVibration] = useState(getStoredHandoffVibrationEnabled);
+  const [hapticsSupported] = useState(canVibrate);
+  const [hapticsArmed, setHapticsArmed] = useState(() => !needsUserGesture());
   const [remoteControl, setRemoteControl] = useState<{ deviceId: string; name: string; muted: boolean } | null>(null);
   const [remoteClick, setRemoteClick] = useState<{ id: number; x: number; y: number } | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -236,6 +256,8 @@ const App = () => {
   const remoteClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const remoteClickSequenceRef = useRef(0);
   const participantsRef = useRef<Participant[]>([]);
+  const remotePointerRef = useRef<{ deviceId: string; active: boolean } | null>(null);
+  const handoffVibrationRef = useRef(handoffVibration);
   const draftBytes = new TextEncoder().encode(draft).length;
   const sharedText = sharedItem.type === 'text' ? sharedItem.text : '';
   const sharedImage = sharedItem.type === 'image' ? sharedItem : null;
@@ -257,6 +279,22 @@ const App = () => {
   useEffect(() => {
     pointerSyncActiveRef.current = canSyncPointer && pointerOnPhone;
   }, [canSyncPointer, pointerOnPhone]);
+
+  useEffect(() => {
+    handoffVibrationRef.current = handoffVibration;
+  }, [handoffVibration]);
+
+  useEffect(() => {
+    if (hapticsArmed) return;
+    const arm = () => setHapticsArmed(true);
+    const options = { once: true };
+    window.addEventListener('pointerdown', arm, options);
+    window.addEventListener('keydown', arm, options);
+    return () => {
+      window.removeEventListener('pointerdown', arm);
+      window.removeEventListener('keydown', arm);
+    };
+  }, [hapticsArmed]);
 
   useEffect(() => {
     const area = phoneAreaRef.current;
@@ -300,6 +338,17 @@ const App = () => {
       window.localStorage.setItem(PHONE_WIDTH_STORAGE_KEY, String(nextWidth));
     } catch {
       // The target remains resizable for this page load.
+    }
+  };
+
+  const updateHandoffVibration = (enabled: boolean) => {
+    setHandoffVibration(enabled);
+    setHapticsArmed(true);
+    vibrate(enabled ? HANDOFF_ENTER_PATTERN : 0);
+    try {
+      window.localStorage.setItem(HANDOFF_VIBRATION_STORAGE_KEY, enabled ? 'on' : 'off');
+    } catch {
+      // The setting stays active for this page load.
     }
   };
 
@@ -351,6 +400,7 @@ const App = () => {
           const update: unknown = JSON.parse(event.data);
           if (isSessionUpdate(update)) {
             clearRemoteControl();
+            remotePointerRef.current = null;
             if (update.type === 'session') {
               joiningStoredSessionRef.current = false;
               setSessionId(update.sessionId);
@@ -414,7 +464,12 @@ const App = () => {
             return;
           }
           if (isPointerUpdate(update)) {
+            const handoff = getHandoffDirection(remotePointerRef.current, update);
+            remotePointerRef.current = { deviceId: update.deviceId, active: update.active };
             setRemotePointer(update.active ? { x: update.x, y: update.y, deviceId: update.deviceId } : null);
+            if (handoff && handoffVibrationRef.current) {
+              vibrate(handoff === 'enter' ? HANDOFF_ENTER_PATTERN : HANDOFF_LEAVE_PATTERN);
+            }
             if (!update.active && remoteControlRef.current?.deviceId === update.deviceId) clearRemoteControl();
             return;
           }
@@ -450,6 +505,7 @@ const App = () => {
       socket.onclose = () => {
         if (!active) return;
         clearRemoteControl();
+        remotePointerRef.current = null;
         setSessionPending(false);
         setSessionId('');
         setParticipants([]);
@@ -848,6 +904,33 @@ const App = () => {
                 ))}
               </ul>
             ) : <span className="participant-empty">{sessionId ? 'Waiting for devices' : 'Create or join a session'}</span>}
+            <label
+              className={`haptics-toggle${hapticsSupported ? '' : ' unsupported'}`}
+              title={hapticsSupported
+                ? 'Vibrates this device when another device’s pointer enters or leaves its screen.'
+                : 'This browser has no Vibration API, so handoffs stay silent.'}
+            >
+              <input
+                type="checkbox"
+                checked={handoffVibration}
+                onChange={(event) => updateHandoffVibration(event.target.checked)}
+                disabled={!hapticsSupported}
+              />
+              <span>Vibrate on handoff</span>
+            </label>
+            {hapticsSupported && !hapticsArmed ? (
+              <button
+                type="button"
+                className="file-button haptics-arm"
+                title="Browsers ignore vibration until the page has been tapped once."
+                onClick={() => {
+                  setHapticsArmed(true);
+                  vibrate(HANDOFF_ENTER_PATTERN);
+                }}
+              >
+                Tap to enable vibration
+              </button>
+            ) : null}
           </div>
         </section>
 
@@ -997,7 +1080,12 @@ const App = () => {
         onPointerLeave={stopPointerSync}
         onPointerDown={forwardClickToPhone}
       >
-        {phoneJoinUrl ? (
+        {hasOtherParticipant ? (
+          <div className="phone-invite" aria-live="polite">
+            <MousePointerClick size={22} aria-hidden="true" />
+            <p className="phone-prompt">Move the cursor into this area to interact with the phone.</p>
+          </div>
+        ) : phoneJoinUrl ? (
           <div className="phone-qr">
             <p className="eyebrow">Scan to join</p>
             <QRCodeSVG value={phoneJoinUrl} size={180} level="M" title={`Join session ${sessionId}`} />
