@@ -99,6 +99,7 @@ UI:
 # 0.13 Doc transfer support
 
 - Support common doc formats: PDF, word... (consider others not mentioned).
+- Add SSL support (docs can be sensible)
 
 ## 0.x future
 
