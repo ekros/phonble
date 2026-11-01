@@ -6,7 +6,9 @@
   "scripts": {
     "build": "rsbuild build",
     "dev": "concurrently --kill-others --names relay,web \"npm:relay\" \"npm:dev:web\"",
+    "dev:https": "concurrently --kill-others --names relay,web \"npm:relay\" \"npm:dev:web:https\"",
     "dev:web": "rsbuild",
+    "dev:web:https": "set HTTPS=1&& rsbuild",
     "lint": "rslint",
     "preview": "rsbuild preview",
     "relay": "node server/index.js",
@@ -24,6 +26,7 @@
   },
   "devDependencies": {
     "@rsbuild/core": "^2.3.0",
+    "@rsbuild/plugin-basic-ssl": "^2.0.0",
     "@rsbuild/plugin-react": "^2.1.1",
     "@rslint/core": "^0.9.5",
     "@rstest/adapter-rsbuild": "^0.12.4",

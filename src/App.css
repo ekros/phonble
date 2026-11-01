@@ -98,6 +98,8 @@ h2 { margin: 0; font-family: Georgia, serif; font-size: 28px; font-weight: 400; 
 .shared-text { flex: 1; margin: 0; padding: 14px 0; overflow: auto; overflow-wrap: anywhere; white-space: pre-wrap; font: 16px/1.65 'Trebuchet MS', sans-serif; user-select: text; }
 .shared-image { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 16px; margin: 0; }
 .shared-image img { display: block; max-width: 100%; max-height: 330px; object-fit: contain; object-position: left center; border-radius: 4px; background: #e9efec; }
+.shared-file { flex: 1; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 14px; color: #17493d; }
+.shared-file strong { max-width: 100%; overflow-wrap: anywhere; font-size: 16px; }
 .download-button { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 14px; border: 1px solid #c9d7d1; border-radius: 6px; color: #17493d; background: #fff; font-size: 13px; font-weight: 700; text-decoration: none; }
 .download-button:hover { background: #e4efea; }
 .compose-area { display: flex; flex: 1; min-height: 175px; border-radius: 6px; }
@@ -121,6 +123,7 @@ h2 { margin: 0; font-family: Georgia, serif; font-size: 28px; font-weight: 400; 
 .history-entry-content { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .history-preview { display: -webkit-box; min-width: 0; margin: 0; overflow: hidden; color: #344840; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .history-thumbnail { display: block; width: 48px; height: 48px; flex: 0 0 48px; object-fit: cover; border-radius: 4px; background: #e9efec; }
+.history-file { display: flex; align-items: center; gap: 9px; width: 220px; min-height: 48px; color: #17493d; overflow-wrap: anywhere; }
 .history-meta { display: flex; flex-direction: column; gap: 4px; min-width: 95px; color: #52635b; font-size: 11px; }
 .history-meta time { color: #7a8982; }
 .history-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }

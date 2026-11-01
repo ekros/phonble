@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ClipboardEvent, CSSProperties, DragEvent, FormEvent, PointerEvent as ReactPointerEvent } from 'react';
-import { Clipboard, Copy, Download, ImagePlus, Moon, MoveDiagonal2, MousePointerClick, Search, Send, Trash2, Users, Wifi, WifiOff, Battery, BatteryCharging, BatteryFull, BatteryLow, BatteryMedium, Signal } from 'lucide-react';
+import { Clipboard, Copy, Download, FileText, ImagePlus, Moon, MoveDiagonal2, MousePointerClick, Search, Send, Trash2, Users, Wifi, WifiOff, Battery, BatteryCharging, BatteryFull, BatteryLow, BatteryMedium, Signal } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import PointerCursor from './PointerCursor';
 import {
@@ -21,7 +21,9 @@ import {
   startPhoneStatusReporting,
 } from './phoneStatus';
 import { createPointerMessage, createPointerReleaseMessage, isPointerUpdate, toPhonePoint } from './pointerSync';
-import { bytesToBase64, gunzipBase64, gzipBase64 } from './compression';
+import { bytesToBase64, gunzipBase64 } from './compression';
+import { canEncryptSessionPayload, createSessionFragment, decryptSessionPayload, encryptSessionPayload, generateSessionKey, getSessionKeyFromLocation, isEncryptedEnvelope } from './sessionCrypto';
+import type { EncryptedEnvelope } from './sessionCrypto';
 import {
   applyRemoteInput,
   createClickInput,
@@ -34,18 +36,36 @@ import './App.css';
 const MAX_TEXT_BYTES = 60 * 1024;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const SUPPORTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const SUPPORTED_DOCUMENT_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-word.document.macroEnabled.12',
+  'application/vnd.oasis.opendocument.text',
+  'application/rtf',
+  'text/plain',
+  'text/csv',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+]);
+const SUPPORTED_FILE_TYPES = new Set([...SUPPORTED_IMAGE_TYPES, ...SUPPORTED_DOCUMENT_TYPES]);
 const IMAGE_EXTENSIONS: Record<string, string> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
   'image/webp': 'webp',
   'image/gif': 'gif',
 };
+const SESSION_KEY_STORAGE_PREFIX = 'phonble-session-key:';
 
 type SharedUpdate =
   | { type: 'text'; text: string }
-  | { type: 'image'; mimeType: string; data: string };
+  | { type: 'image'; mimeType: string; data: string }
+  | { type: 'file'; name: string; mimeType: string; data: string };
 type CompressedImageUpdate = { type: 'compressed-image'; mimeType: string; data: string };
 type HistoryItem = SharedUpdate & { id: string; deviceName: string; timestamp: number };
+type EncryptedHistoryItem = { id: string; deviceName: string; timestamp: number; payload: EncryptedEnvelope };
 type Participant = { id: string; name: string };
 type ParticipantUpdate = { type: 'participants'; deviceId: string; participants: Participant[] };
 type HistoryUpdate = { type: 'history'; items: HistoryItem[] };
@@ -96,10 +116,11 @@ const getStoredHandoffVibrationEnabled = () => {
   }
 };
 
-export const createSessionJoinUrl = (sessionId: string, hostname: string) => {
+export const createSessionJoinUrl = (sessionId: string, hostname: string, sessionKey = '') => {
   const url = new URL(window.location.origin);
   if (hostname !== url.hostname) url.hostname = hostname;
   url.searchParams.set('session', sessionId);
+  if (sessionKey) url.hash = createSessionFragment(sessionKey);
   return url.toString();
 };
 
@@ -136,6 +157,22 @@ const getStoredSessionId = () => {
     return window.localStorage.getItem(SESSION_STORAGE_KEY) ?? '';
   } catch {
     return '';
+  }
+};
+
+const getStoredSessionKey = (sessionId: string) => {
+  try {
+    return window.localStorage.getItem(`${SESSION_KEY_STORAGE_PREFIX}${sessionId}`) ?? '';
+  } catch {
+    return '';
+  }
+};
+
+const storeSessionKey = (sessionId: string, sessionKey: string) => {
+  try {
+    window.localStorage.setItem(`${SESSION_KEY_STORAGE_PREFIX}${sessionId}`, sessionKey);
+  } catch {
+    // The URL remains the source of truth for this session.
   }
 };
 
@@ -235,6 +272,12 @@ const isSharedUpdate = (value: unknown): value is SharedUpdate => {
     return SUPPORTED_IMAGE_TYPES.has(update.mimeType) && byteLength !== null && byteLength <= MAX_IMAGE_BYTES;
   }
 
+  if (update.type === 'file' && typeof update.name === 'string' && update.name.length <= 160 &&
+    typeof update.mimeType === 'string' && SUPPORTED_DOCUMENT_TYPES.has(update.mimeType) && typeof update.data === 'string') {
+    const byteLength = getBase64ByteLength(update.data);
+    return byteLength !== null && byteLength <= MAX_IMAGE_BYTES;
+  }
+
   return false;
 };
 
@@ -276,6 +319,7 @@ const App = () => {
   const [deviceName, setDeviceName] = useState(getStoredDeviceName);
   const [nameDraft, setNameDraft] = useState(getStoredDeviceName);
   const [sessionId, setSessionId] = useState('');
+  const [sessionKey, setSessionKey] = useState('');
   const [lanAddresses, setLanAddresses] = useState<string[]>([]);
   const [sessionDraft, setSessionDraft] = useState('');
   const [sessionPending, setSessionPending] = useState(false);
@@ -296,6 +340,8 @@ const App = () => {
   const [phoneStatuses, setPhoneStatuses] = useState<Record<string, PhoneStatusUpdate>>({});
   const [statusClock, setStatusClock] = useState(() => Date.now());
   const socketRef = useRef<WebSocket | null>(null);
+  const sessionKeyRef = useRef('');
+  const pendingSessionKeyRef = useRef('');
   const joiningStoredSessionRef = useRef(false);
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
   const resizeStartRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
@@ -311,13 +357,15 @@ const App = () => {
   const clipboardReadersRef = useRef<{
     shareText: (text: string) => void;
     shareImage: (file: File) => void;
+    shareFile: (file: File) => void;
   } | null>(null);
   const draftBytes = new TextEncoder().encode(draft).length;
   const sharedText = sharedItem.type === 'text' ? sharedItem.text : '';
   const sharedImage = sharedItem.type === 'image' ? sharedItem : null;
-  const hasSharedItem = Boolean(sharedText || sharedImage);
+  const sharedFile = sharedItem.type === 'file' ? sharedItem : null;
+  const hasSharedItem = Boolean(sharedText || sharedImage || sharedFile);
   const phoneJoinHostname = getJoinHostname(lanAddresses);
-  const phoneJoinUrl = sessionId ? createSessionJoinUrl(sessionId, phoneJoinHostname) : '';
+  const phoneJoinUrl = sessionId && sessionKey ? createSessionJoinUrl(sessionId, phoneJoinHostname, sessionKey) : '';
   const phoneJoinUrlIsLocal = isLoopbackHostname(phoneJoinHostname);
   const hasOtherParticipant = participants.some((participant) => participant.id !== deviceId);
   const canSyncPointer = connection === 'connected' && Boolean(sessionId) && hasOtherParticipant;
@@ -354,6 +402,10 @@ const App = () => {
   useEffect(() => {
     handoffVibrationRef.current = handoffVibration;
   }, [handoffVibration]);
+
+  useEffect(() => {
+    sessionKeyRef.current = sessionKey;
+  }, [sessionKey]);
 
   useEffect(() => {
     if (!remotePhoneStatus) return;
@@ -476,6 +528,12 @@ const App = () => {
         const savedSessionId = getStoredSessionId();
         const sessionToJoin = hasRequestedSession ? requestedSessionId : savedSessionId;
         if (SESSION_ID_PATTERN.test(sessionToJoin)) {
+          const requestedKey = getSessionKeyFromLocation() || getStoredSessionKey(sessionToJoin);
+          if (!requestedKey) {
+            setNotice('This session requires its secure QR link, not only the session ID.');
+            return;
+          }
+          sessionKeyRef.current = requestedKey;
           joiningStoredSessionRef.current = !hasRequestedSession;
           setSessionPending(true);
           socket.send(JSON.stringify({ type: 'join-session', sessionId: sessionToJoin }));
@@ -484,6 +542,14 @@ const App = () => {
       socket.onmessage = async (event) => {
         try {
           const update: unknown = JSON.parse(event.data);
+          if (isEncryptedEnvelope(update)) {
+            const key = sessionKeyRef.current;
+            if (!key) throw new Error('Secure session key is unavailable');
+            const decrypted = await decryptSessionPayload<unknown>(key, update);
+            if (!isSharedUpdate(decrypted)) throw new Error('Invalid encrypted shared update');
+            setSharedItem(decrypted);
+            return;
+          }
           if (isCompressedImageUpdate(update)) {
             const decoded = await decodeCompressedImage(update);
             setSharedItem(decoded);
@@ -492,25 +558,36 @@ const App = () => {
           if (update && typeof update === 'object' && (update as Record<string, unknown>).type === 'history') {
             const historyUpdate = update as { items?: unknown[] };
             const items = await Promise.all((historyUpdate.items ?? []).map(async (item) => {
+              if (item && typeof item === 'object' && 'payload' in item && isEncryptedEnvelope((item as EncryptedHistoryItem).payload)) {
+                const decrypted = await decryptSessionPayload<unknown>(sessionKeyRef.current, (item as EncryptedHistoryItem).payload);
+                if (!isSharedUpdate(decrypted)) throw new Error('Invalid encrypted history item');
+                return { ...decrypted, id: (item as EncryptedHistoryItem).id, deviceName: (item as EncryptedHistoryItem).deviceName, timestamp: (item as EncryptedHistoryItem).timestamp };
+              }
               if (!isCompressedImageUpdate(item)) return item;
               const decoded = await decodeCompressedImage(item);
               const metadata = item as Record<string, unknown>;
               return { ...decoded, id: metadata.id, deviceName: metadata.deviceName, timestamp: metadata.timestamp };
             }));
             const normalized = { ...historyUpdate, items };
-            if (isHistoryUpdate(normalized)) setHistory(normalized.items);
+            if (isHistoryUpdate(normalized)) setHistory(normalized.items.filter((item) => item.type !== 'text' || item.text.length > 0));
             return;
           }
           if (update && typeof update === 'object' && (update as Record<string, unknown>).type === 'history-item') {
             const historyItemUpdate = update as { item?: unknown; removedIds?: string[] };
-            const item = isCompressedImageUpdate(historyItemUpdate.item)
+            const item = historyItemUpdate.item && typeof historyItemUpdate.item === 'object' && 'payload' in historyItemUpdate.item && isEncryptedEnvelope((historyItemUpdate.item as EncryptedHistoryItem).payload)
+              ? await decryptSessionPayload<unknown>(sessionKeyRef.current, (historyItemUpdate.item as EncryptedHistoryItem).payload).then((decoded) => {
+                  if (!isSharedUpdate(decoded)) throw new Error('Invalid encrypted history item');
+                  const metadata = historyItemUpdate.item as EncryptedHistoryItem;
+                  return { ...decoded, id: metadata.id, deviceName: metadata.deviceName, timestamp: metadata.timestamp };
+                })
+              : isCompressedImageUpdate(historyItemUpdate.item)
               ? await decodeCompressedImage(historyItemUpdate.item).then((decoded) => {
                   const metadata = historyItemUpdate.item as Record<string, unknown>;
                   return { ...decoded, id: metadata.id, deviceName: metadata.deviceName, timestamp: metadata.timestamp };
                 })
               : historyItemUpdate.item;
             const normalized = { ...historyItemUpdate, item };
-            if (isHistoryItemUpdate(normalized)) {
+            if (isHistoryItemUpdate(normalized) && (normalized.item.type !== 'text' || normalized.item.text.length > 0)) {
               setHistory((items) => [
                 normalized.item,
                 ...items.filter((current) => current.id !== normalized.item.id && !normalized.removedIds.includes(current.id)),
@@ -524,6 +601,11 @@ const App = () => {
             if (update.type === 'session') {
               joiningStoredSessionRef.current = false;
               setSessionId(update.sessionId);
+              const nextKey = pendingSessionKeyRef.current || sessionKeyRef.current || getSessionKeyFromLocation() || getStoredSessionKey(update.sessionId) || await generateSessionKey();
+              setSessionKey(nextKey);
+              sessionKeyRef.current = nextKey;
+              storeSessionKey(update.sessionId, nextKey);
+              pendingSessionKeyRef.current = '';
               setSessionDraft('');
               setSessionPending(false);
               setDeviceId('');
@@ -550,6 +632,9 @@ const App = () => {
               }
             } else {
               setSessionId('');
+              setSessionKey('');
+              sessionKeyRef.current = '';
+              pendingSessionKeyRef.current = '';
               setSessionPending(false);
               setParticipants([]);
               setDeviceId('');
@@ -702,6 +787,20 @@ const App = () => {
     lastPointerRef.current = null;
   }, [canSyncPointer, pointerOnPhone]);
 
+  const sendSharedUpdate = async (update: SharedUpdate) => {
+    const socket = socketRef.current;
+    if (socket?.readyState !== WebSocket.OPEN || !sessionId || sessionPending || !sessionKeyRef.current) {
+      setNotice('Create or join a secure session before sharing.');
+      return false;
+    }
+    if (!canEncryptSessionPayload()) {
+      setNotice('Secure sharing requires HTTPS or localhost. Open the app over a secure connection.');
+      return false;
+    }
+    socket.send(JSON.stringify(await encryptSessionPayload(sessionKeyRef.current, update)));
+    return true;
+  };
+
   const shareText = (text: string) => {
     if (new TextEncoder().encode(text).length > MAX_TEXT_BYTES) {
       setNotice('Text is too large to share.');
@@ -711,20 +810,28 @@ const App = () => {
       setNotice('Disconnected. Your draft is still here.');
       return;
     }
-    if (!sessionId || sessionPending) {
-      setNotice('Create or join a session to share text.');
-      return;
-    }
-    socketRef.current.send(JSON.stringify({ type: 'text', text }));
-    setSharedItem({ type: 'text', text });
-    setNotice('Shared with connected devices.');
+    void sendSharedUpdate({ type: 'text', text })
+      .then((sent) => {
+        if (sent) {
+          setSharedItem({ type: 'text', text });
+          setNotice('Shared with connected devices.');
+        }
+      })
+      .catch(() => setNotice('Could not encrypt this share.'));
   };
 
   const createSession = () => {
     if (socketRef.current?.readyState !== WebSocket.OPEN || sessionPending) return;
-    joiningStoredSessionRef.current = false;
-    setSessionPending(true);
-    socketRef.current.send(JSON.stringify({ type: 'create-session' }));
+    try {
+      joiningStoredSessionRef.current = false;
+      const key = generateSessionKey();
+      pendingSessionKeyRef.current = key;
+      sessionKeyRef.current = key;
+      setSessionPending(true);
+      socketRef.current.send(JSON.stringify({ type: 'create-session' }));
+    } catch {
+      setNotice('Secure session encryption is unavailable in this browser.');
+    }
   };
 
   const joinSession = (event: FormEvent<HTMLFormElement>) => {
@@ -735,6 +842,13 @@ const App = () => {
       return;
     }
     if (socketRef.current?.readyState !== WebSocket.OPEN || sessionPending) return;
+    const key = getSessionKeyFromLocation() || getStoredSessionKey(id) || sessionKeyRef.current;
+    if (!key) {
+      setNotice('Joining requires the secure QR link containing the session key.');
+      return;
+    }
+    sessionKeyRef.current = key;
+    pendingSessionKeyRef.current = key;
     joiningStoredSessionRef.current = false;
     setSessionPending(true);
     socketRef.current.send(JSON.stringify({ type: 'join-session', sessionId: id }));
@@ -783,44 +897,42 @@ const App = () => {
     setNotice('Device name updated.');
   };
 
-  const shareImage = async (file: File) => {
-    if (!SUPPORTED_IMAGE_TYPES.has(file.type)) {
-      setNotice('Choose a PNG, JPEG, WebP, or GIF image.');
+  const shareFile = async (file: File) => {
+    if (!SUPPORTED_FILE_TYPES.has(file.type)) {
+      setNotice('Choose an image or a common document file.');
       return;
     }
     if (file.size > MAX_IMAGE_BYTES) {
-      setNotice('Image is too large. Maximum size is 5 MB.');
+      setNotice('File is too large. Maximum size is 5 MB.');
       return;
     }
     if (socketRef.current?.readyState !== WebSocket.OPEN) {
-      setNotice('Disconnected. Your image was not shared.');
+      setNotice('Disconnected. Your file was not shared.');
       return;
     }
     if (!sessionId || sessionPending) {
-      setNotice('Create or join a session to share images.');
+      setNotice('Create or join a session to share files.');
       return;
     }
 
     try {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      const compressedData = await gzipBase64(bytes);
-      const data = compressedData ?? await fileToBase64(file);
-      if (socketRef.current?.readyState !== WebSocket.OPEN) {
-        setNotice('Disconnected. Your image was not shared.');
-        return;
+      const data = await fileToBase64(file);
+      const update: SharedUpdate = SUPPORTED_IMAGE_TYPES.has(file.type)
+        ? { type: 'image', mimeType: file.type, data }
+        : { type: 'file', name: file.name, mimeType: file.type, data };
+      if (await sendSharedUpdate(update)) {
+        setSharedItem(update);
+        setNotice('Shared with connected devices.');
       }
-      const update = compressedData
-        ? { type: 'compressed-image', mimeType: file.type, data }
-        : { type: 'image', mimeType: file.type, data };
-      socketRef.current.send(JSON.stringify(update));
-      setSharedItem(compressedData ? { type: 'image', mimeType: file.type, data } : update);
-      setNotice('Shared with connected devices.');
-    } catch {
-      setNotice('Could not read this image.');
+    } catch (error) {
+      setNotice(error instanceof DOMException && error.name === 'NotSupportedError'
+        ? 'Secure sharing requires HTTPS or localhost. Open the app over a secure connection.'
+        : 'Could not read or encrypt this file.');
     }
   };
 
-  clipboardReadersRef.current = { shareText, shareImage };
+  const shareImage = shareFile;
+  clipboardReadersRef.current = { shareText, shareImage, shareFile };
 
   useEffect(() => {
     const clipboard = navigator.clipboard;
@@ -919,11 +1031,11 @@ const App = () => {
     shareText(text);
   };
 
-  const dropImage = (event: DragEvent<HTMLDivElement>) => {
+  const dropFile = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setDragActive(false);
     const image = event.dataTransfer.files[0];
-    if (image) void shareImage(image);
+    if (image) void shareFile(image);
   };
 
   const copy = async () => {
@@ -985,7 +1097,7 @@ const App = () => {
   const filteredHistory = history.filter((item) => {
     const search = historySearch.trim().toLocaleLowerCase();
     if (!search) return true;
-    const content = item.type === 'text' ? item.text : `image ${item.mimeType}`;
+    const content = item.type === 'text' ? item.text : item.type === 'image' ? `image ${item.mimeType}` : `${item.name} ${item.mimeType}`;
     return `${content} ${item.deviceName}`.toLocaleLowerCase().includes(search);
   });
 
@@ -1185,6 +1297,14 @@ const App = () => {
                   <Download size={17} /> Download image
                 </a>
               </figure>
+            ) : sharedFile ? (
+              <div className="shared-file">
+                <FileText size={42} strokeWidth={1.5} />
+                <strong>{sharedFile.name}</strong>
+                <a className="download-button" href={`data:${sharedFile.mimeType};base64,${sharedFile.data}`} download={sharedFile.name}>
+                  <Download size={17} /> Download file
+                </a>
+              </div>
             ) : sharedText ? <pre className="shared-text">{sharedText}</pre> : (
               <div className="empty-state"><Clipboard size={28} strokeWidth={1.5} /><p>Nothing shared yet.</p></div>
             )}
@@ -1192,31 +1312,31 @@ const App = () => {
 
           <section className="pane outgoing" aria-labelledby="outgoing-heading">
             <div className="pane-heading">
-              <div><p className="eyebrow">02 / From this device</p><h2 id="outgoing-heading">Send text or image</h2></div>
+              <div><p className="eyebrow">02 / From this device</p><h2 id="outgoing-heading">Send text or file</h2></div>
               <span className="pane-symbol" aria-hidden="true"><Send size={20} /></span>
             </div>
             <label className="sr-only" htmlFor="draft">Text to share</label>
             <div
               className={`compose-area${dragActive ? ' drag-active' : ''}`}
-              aria-label="Image drop area"
+              aria-label="File drop area"
               onDragOver={(event) => {
                 event.preventDefault();
                 setDragActive(true);
               }}
               onDragLeave={() => setDragActive(false)}
-              onDrop={dropImage}
+              onDrop={dropFile}
             >
-              <textarea id="draft" value={draft} onChange={(event) => setDraft(event.target.value)} onPaste={paste} placeholder="Type text, or paste/drop an image..." spellCheck={false} />
+              <textarea id="draft" value={draft} onChange={(event) => setDraft(event.target.value)} onPaste={paste} placeholder="Type text, or paste/drop a file..." spellCheck={false} />
             </div>
             <input
               id="image-file"
               className="sr-only"
               type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif"
-              aria-label="Choose image"
+              accept="image/*,.pdf,.doc,.docx,.odt,.rtf,.txt,.csv,.xls,.xlsx,.ppt,.pptx"
+              aria-label="Choose image or document"
               onChange={(event) => {
-                const image = event.currentTarget.files?.[0];
-                if (image) void shareImage(image);
+                const file = event.currentTarget.files?.[0];
+                if (file) void shareFile(file);
                 event.currentTarget.value = '';
               }}
             />
@@ -1224,7 +1344,7 @@ const App = () => {
               <span className={draftBytes > MAX_TEXT_BYTES ? 'over-limit' : ''}>{(draftBytes / 1024).toFixed(1)} / 60 KB</span>
               <div className="compose-actions">
                 <button className="file-button" onClick={() => document.getElementById('image-file')?.click()} disabled={connection !== 'connected' || !sessionId || sessionPending}>
-                  <ImagePlus size={17} /> Choose image
+                  <ImagePlus size={17} /> Choose file
                 </button>
                 <button className="share-button" onClick={() => shareText(draft)} disabled={!draft || draftBytes > MAX_TEXT_BYTES || connection !== 'connected' || !sessionId || sessionPending}>
                   <Send size={17} /> Share text
@@ -1264,12 +1384,17 @@ const App = () => {
                   <div className="history-entry-content">
                     {item.type === 'text' ? (
                       <p className="history-preview">{item.text || 'Empty text share'}</p>
-                    ) : (
+                    ) : item.type === 'image' ? (
                       <img
                         className="history-thumbnail"
                         src={`data:${item.mimeType};base64,${item.data}`}
                         alt="Shared image preview"
                       />
+                    ) : (
+                      <div className="history-file">
+                        <FileText size={26} />
+                        <span>{item.name}</span>
+                      </div>
                     )}
                     <div className="history-meta">
                       <span>{item.deviceName}</span>
@@ -1279,15 +1404,17 @@ const App = () => {
                     </div>
                   </div>
                   <div className="history-actions">
-                    <button className="file-button" type="button" onClick={() => void copyHistoryItem(item)}>
-                      <Copy size={15} /> {item.type === 'text' ? 'Copy' : 'Copy image'}
-                    </button>
-                    {item.type === 'image' ? (
+                    {item.type !== 'file' ? (
+                      <button className="file-button" type="button" onClick={() => void copyHistoryItem(item)}>
+                        <Copy size={15} /> {item.type === 'text' ? 'Copy' : 'Copy image'}
+                      </button>
+                    ) : null}
+                    {item.type !== 'text' ? (
                       <a
                         className="download-button"
                         href={`data:${item.mimeType};base64,${item.data}`}
-                        download={`shared-image-${item.id}.${IMAGE_EXTENSIONS[item.mimeType]}`}
-                        aria-label={`Download image shared by ${item.deviceName}`}
+                        download={item.type === 'image' ? `shared-image-${item.id}.${IMAGE_EXTENSIONS[item.mimeType]}` : item.name}
+                        aria-label={`Download ${item.type === 'image' ? 'image' : 'file'} shared by ${item.deviceName}`}
                       >
                         <Download size={15} />
                       </a>

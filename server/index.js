@@ -413,7 +413,17 @@ export const createRelayServer = () => {
           return;
         }
 
-        if (update?.type === 'text') {
+        const isEncrypted = update?.type === 'encrypted';
+        if (isEncrypted) {
+          if (
+            typeof update.iv !== 'string' ||
+            !/^[A-Za-z0-9_-]{16}$/.test(update.iv) ||
+            typeof update.data !== 'string' ||
+            update.data.length > maxPayloadBytes
+          ) {
+            throw new Error('Invalid encrypted update');
+          }
+        } else if (update?.type === 'text') {
           if (typeof update.text !== 'string' || Buffer.byteLength(update.text, 'utf8') > maxTextBytes) {
             throw new Error('Invalid text update');
           }
@@ -447,13 +457,10 @@ export const createRelayServer = () => {
         if (!session) throw new Error('Participant is not in a session');
         session.latestUpdate = update;
         let historyPayload;
-        if (update.type === 'image' || update.type === 'compressed-image' || (update.type === 'text' && update.text.length > 0)) {
-          const historyItem = {
-            ...update,
-            id: randomUUID(),
-            deviceName: participant.name,
-            timestamp: Date.now(),
-          };
+        if (isEncrypted || update.type === 'image' || update.type === 'compressed-image' || (update.type === 'text' && update.text.length > 0)) {
+          const historyItem = isEncrypted
+            ? { id: randomUUID(), deviceName: participant.name, timestamp: Date.now(), payload: update }
+            : { ...update, id: randomUUID(), deviceName: participant.name, timestamp: Date.now() };
           session.history.unshift(historyItem);
           session.historyBytes += Buffer.byteLength(JSON.stringify(historyItem));
           const removedIds = [];

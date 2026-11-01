@@ -96,6 +96,10 @@ UI:
 
 - Compression Streams API: Gzip payloads before base64 → the 5 MB image budget goes 3–4× further over the relay.
 
+# 0.13 Doc transfer support
+
+- Support common doc formats: PDF, word... (consider others not mentioned).
+
 ## 0.x future
 
 - Using this feature as a base, I want to perform actions in the app running in the phone (TBD)
