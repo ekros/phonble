@@ -565,7 +565,10 @@ test('rejects unsupported image types and files over 5 MB', async () => {
     target: { files: [new File([new Uint8Array(5 * 1024 * 1024 + 1)], 'large.png', { type: 'image/png' })] },
   });
   expect(screen.getByText('Image is too large. Maximum size is 5 MB.')).toBeInTheDocument();
-  expect(MockWebSocket.lastInstance?.sent).toHaveLength(0);
+  const sharedUpdates = (MockWebSocket.lastInstance?.sent ?? [])
+    .map((message) => JSON.parse(message) as { type: string })
+    .filter((update) => update.type === 'image' || update.type === 'text');
+  expect(sharedUpdates).toHaveLength(0);
 });
 
 test('vibrates when another device pointer enters and leaves this screen', async () => {
@@ -650,4 +653,84 @@ test('confirms the setting with a short vibration when it is turned on', async (
 
   expect(vibrationCalls).toEqual([HANDOFF_ENTER_PATTERN]);
   expect(window.localStorage.getItem('phonble-handoff-vibration')).toBe('on');
+});
+
+
+const phoneStatusMessages = () =>
+  (MockWebSocket.lastInstance?.sent ?? [])
+    .map((message) => JSON.parse(message) as { type: string })
+    .filter((update) => update.type === 'phone-status');
+
+const incomingPhoneStatus = (overrides: Record<string, unknown> = {}) => ({
+  type: 'phone-status',
+  deviceId: 'laptop',
+  updatedAt: Date.now(),
+  visibility: 'visible',
+  lastInteractionAt: Date.now(),
+  battery: { level: 0.78, charging: true, chargingTime: 1200, dischargingTime: null },
+  network: { online: true, effectiveType: '4g', saveData: false, rtt: 40, downlink: 8 },
+  screen: { width: 390, height: 844, dpr: 3, orientation: 'portrait' },
+  device: { model: 'Pixel 7', platformVersion: '14', cores: 8, memoryGb: 4 },
+  ...overrides,
+});
+
+const phoneArea = () => screen.getByRole('complementary', { name: 'Phone placement area' });
+
+test('reports this device status once a session is active', async () => {
+  Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: MockWebSocket });
+  await renderConnected();
+
+  await waitFor(() => expect(phoneStatusMessages().length).toBeGreaterThan(0));
+  expect(phoneStatusMessages()[0]).toMatchObject({ type: 'phone-status', visibility: 'visible' });
+});
+
+test('shows the battery, network and screen state of the connected phone', async () => {
+  await renderWithOtherDevice();
+  expect(within(phoneArea()).queryByText('78%')).toBeNull();
+
+  act(() => MockWebSocket.lastInstance?.receive(incomingPhoneStatus()));
+
+  const panel = within(phoneArea()).getByRole('status');
+  expect(within(panel).getByText('Laptop')).toBeInTheDocument();
+  expect(within(panel).getByText('4G')).toBeInTheDocument();
+  expect(within(panel).getByText('78%')).toBeInTheDocument();
+  expect(within(panel).getByLabelText('Battery: 78%, charging')).toBeInTheDocument();
+  expect(within(panel).getByTitle('Pixel 7 · 14 · 8 cores')).toBeInTheDocument();
+  expect(within(panel).queryByText('Screen off')).toBeNull();
+});
+
+test('shows when the connected phone cannot report battery information', async () => {
+  await renderWithOtherDevice();
+
+  act(() => MockWebSocket.lastInstance?.receive(incomingPhoneStatus({ battery: null })));
+
+  const panel = within(phoneArea()).getByRole('status');
+  expect(within(panel).getByText('N/A')).toBeInTheDocument();
+  expect(within(panel).getByLabelText('Battery: unavailable')).toBeInTheDocument();
+});
+
+test('swaps the network indicator for a screen-off hint', async () => {
+  await renderWithOtherDevice();
+
+  act(() => MockWebSocket.lastInstance?.receive(incomingPhoneStatus({ visibility: 'hidden' })));
+
+  const panel = within(phoneArea()).getByRole('status');
+  expect(within(panel).getByText('Screen off')).toBeInTheDocument();
+  expect(within(panel).queryByText('4G')).toBeNull();
+});
+
+test('marks a phone status as stale once the phone stops updating it', async () => {
+  await renderWithOtherDevice();
+
+  act(() => MockWebSocket.lastInstance?.receive(incomingPhoneStatus({ updatedAt: Date.now() - 120_000 })));
+
+  expect(within(phoneArea()).getByText('Stale · 2m ago')).toBeInTheDocument();
+});
+
+test('ignores phone status from devices outside the session', async () => {
+  await renderWithOtherDevice();
+
+  act(() => MockWebSocket.lastInstance?.receive(incomingPhoneStatus({ deviceId: 'ghost' })));
+
+  expect(within(phoneArea()).queryByRole('status')).toBeNull();
 });

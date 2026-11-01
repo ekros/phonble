@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ClipboardEvent, CSSProperties, DragEvent, FormEvent, PointerEvent as ReactPointerEvent } from 'react';
-import { Clipboard, Copy, Download, ImagePlus, MoveDiagonal2, MousePointerClick, Search, Send, Trash2, Users, Wifi, WifiOff } from 'lucide-react';
+import { Clipboard, Copy, Download, ImagePlus, Moon, MoveDiagonal2, MousePointerClick, Search, Send, Trash2, Users, Wifi, WifiOff, Battery, BatteryCharging, BatteryFull, BatteryLow, BatteryMedium, Signal } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import PointerCursor from './PointerCursor';
 import {
@@ -11,6 +11,15 @@ import {
   needsUserGesture,
   vibrate,
 } from './haptics';
+import type { PhoneBattery, PhoneStatusUpdate } from './phoneStatus';
+import {
+  describePhoneNetwork,
+  formatBatteryLevel,
+  formatPhoneStatusAge,
+  isPhoneStatusStale,
+  isPhoneStatusUpdate,
+  startPhoneStatusReporting,
+} from './phoneStatus';
 import { createPointerMessage, createPointerReleaseMessage, isPointerUpdate, toPhonePoint } from './pointerSync';
 import {
   applyRemoteInput,
@@ -53,6 +62,15 @@ const DEFAULT_PHONE_WIDTH = 280;
 const MIN_PHONE_WIDTH = 200;
 const MAX_PHONE_WIDTH = 360;
 const REMOTE_CONTROL_IDLE_MS = 5000;
+const PHONE_STATUS_CLOCK_MS = 5000;
+
+const BatteryLevelIcon = ({ battery }: { battery: PhoneBattery | null }) => {
+  if (!battery) return <Battery size={16} aria-hidden="true" />;
+  if (battery.charging) return <BatteryCharging size={16} aria-hidden="true" />;
+  if (battery.level >= 0.66) return <BatteryFull size={16} aria-hidden="true" />;
+  if (battery.level >= 0.33) return <BatteryMedium size={16} aria-hidden="true" />;
+  return <BatteryLow size={16} aria-hidden="true" />;
+};
 
 const clampPhoneWidth = (width: number) => Math.min(MAX_PHONE_WIDTH, Math.max(MIN_PHONE_WIDTH, width));
 
@@ -245,6 +263,8 @@ const App = () => {
   const [hapticsArmed, setHapticsArmed] = useState(() => !needsUserGesture());
   const [remoteControl, setRemoteControl] = useState<{ deviceId: string; name: string; muted: boolean } | null>(null);
   const [remoteClick, setRemoteClick] = useState<{ id: number; x: number; y: number } | null>(null);
+  const [phoneStatuses, setPhoneStatuses] = useState<Record<string, PhoneStatusUpdate>>({});
+  const [statusClock, setStatusClock] = useState(() => Date.now());
   const socketRef = useRef<WebSocket | null>(null);
   const joiningStoredSessionRef = useRef(false);
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
@@ -271,6 +291,23 @@ const App = () => {
     remotePointer && participants.some((participant) => participant.id === remotePointer.deviceId)
       ? remotePointer
       : null;
+  const remotePhoneStatus = Object.values(phoneStatuses).reduce<PhoneStatusUpdate | null>(
+    (latest, status) => {
+      if (status.deviceId === deviceId) return latest;
+      if (!participants.some((participant) => participant.id === status.deviceId)) return latest;
+      return !latest || status.updatedAt > latest.updatedAt ? status : latest;
+    },
+    null,
+  );
+  const remotePhoneName = remotePhoneStatus
+    ? participants.find((participant) => participant.id === remotePhoneStatus.deviceId)?.name ?? 'Phone'
+    : '';
+  const phoneStatusStale = remotePhoneStatus
+    ? isPhoneStatusStale(remotePhoneStatus.updatedAt, statusClock)
+    : false;
+  const phoneStatusAge = remotePhoneStatus
+    ? formatPhoneStatusAge(remotePhoneStatus.updatedAt, statusClock)
+    : '';
 
   useEffect(() => {
     participantsRef.current = participants;
@@ -283,6 +320,21 @@ const App = () => {
   useEffect(() => {
     handoffVibrationRef.current = handoffVibration;
   }, [handoffVibration]);
+
+  useEffect(() => {
+    if (!remotePhoneStatus) return;
+    const timer = setInterval(() => setStatusClock(Date.now()), PHONE_STATUS_CLOCK_MS);
+    return () => clearInterval(timer);
+  }, [remotePhoneStatus]);
+
+  useEffect(() => {
+    if (connection !== 'connected' || !sessionId) return;
+    return startPhoneStatusReporting((status) => {
+      const socket = socketRef.current;
+      if (socket?.readyState !== WebSocket.OPEN) return;
+      socket.send(JSON.stringify(status));
+    });
+  }, [connection, sessionId]);
 
   useEffect(() => {
     if (hapticsArmed) return;
@@ -409,6 +461,7 @@ const App = () => {
               setDeviceId('');
               setParticipants([]);
               setHistory([]);
+              setPhoneStatuses({});
               setSharedItem({ type: 'text', text: '' });
               try {
                 window.localStorage.setItem(SESSION_STORAGE_KEY, update.sessionId);
@@ -433,6 +486,7 @@ const App = () => {
               setParticipants([]);
               setDeviceId('');
               setHistory([]);
+              setPhoneStatuses({});
               setSharedItem({ type: 'text', text: '' });
               try {
                 window.localStorage.removeItem(SESSION_STORAGE_KEY);
@@ -446,6 +500,11 @@ const App = () => {
             setDeviceId(update.deviceId);
             participantsRef.current = update.participants;
             setParticipants(update.participants);
+            setPhoneStatuses((current) => {
+              const ids = new Set(update.participants.map((participant) => participant.id));
+              const kept = Object.entries(current).filter(([id]) => ids.has(id));
+              return kept.length === Object.keys(current).length ? current : Object.fromEntries(kept);
+            });
             return;
           }
           if (isHistoryUpdate(update)) {
@@ -461,6 +520,11 @@ const App = () => {
           }
           if (isServerInfoUpdate(update)) {
             setLanAddresses(update.lanAddresses);
+            return;
+          }
+          if (isPhoneStatusUpdate(update)) {
+            setStatusClock(Date.now());
+            setPhoneStatuses((current) => ({ ...current, [update.deviceId]: update }));
             return;
           }
           if (isPointerUpdate(update)) {
@@ -511,6 +575,7 @@ const App = () => {
         setParticipants([]);
         setDeviceId('');
         setHistory([]);
+        setPhoneStatuses({});
         setSharedItem({ type: 'text', text: '' });
         setConnection('reconnecting');
         retryTimer = setTimeout(connect, 1500);
@@ -1099,6 +1164,49 @@ const App = () => {
         ) : (
           <p className="phone-prompt">Create or join a session to connect your phone.</p>
         )}
+        {remotePhoneStatus ? (
+          <div className={`phone-status${phoneStatusStale ? ' stale' : ''}`} role="status" aria-live="polite">
+            <span className="phone-status-left">
+              <span
+                className="phone-status-device"
+                title={[remotePhoneStatus.device.model, remotePhoneStatus.device.platformVersion, remotePhoneStatus.device.cores ? `${remotePhoneStatus.device.cores} cores` : null].filter(Boolean).join(' · ') || remotePhoneName}
+              >
+                {remotePhoneName}
+              </span>
+              <span
+                className="phone-status-signal"
+                title="Connection type only; carrier name and signal strength are not available in a browser"
+              >
+                {remotePhoneStatus.visibility === 'hidden' ? (
+                  <>
+                    <Moon size={13} aria-hidden="true" />
+                    Screen off
+                  </>
+                ) : (
+                  <>
+                    <Signal size={13} aria-hidden="true" />
+                    {describePhoneNetwork(remotePhoneStatus.network)}
+                  </>
+                )}
+              </span>
+            </span>
+            <span
+              className="phone-status-battery"
+              aria-label={remotePhoneStatus.battery
+                ? `Battery: ${formatBatteryLevel(remotePhoneStatus.battery)}, ${remotePhoneStatus.battery.charging ? 'charging' : 'on battery'}`
+                : 'Battery: unavailable'}
+              title={remotePhoneStatus.battery ? undefined : 'Battery information is not available in this browser'}
+            >
+              {remotePhoneStatus.battery ? (
+                <span className="phone-status-level">{formatBatteryLevel(remotePhoneStatus.battery)}</span>
+              ) : (
+                <span className="phone-status-level">N/A</span>
+              )}
+              <BatteryLevelIcon battery={remotePhoneStatus.battery} />
+            </span>
+          </div>
+        ) : null}
+        {phoneStatusStale ? <p className="phone-status-stale">Stale · {phoneStatusAge}</p> : null}
         <div
           className="phone-resize-handle"
           role="slider"

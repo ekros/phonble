@@ -282,3 +282,86 @@ test('drops input updates above the relay rate limit without closing the socket'
   expect(relayed).toBeLessThan(300);
   expect(host.readyState).toBe(1);
 });
+
+const phoneStatusPayload = {
+  type: 'phone-status',
+  updatedAt: 1,
+  visibility: 'visible',
+  lastInteractionAt: 1,
+  battery: { level: 0.62, charging: false, chargingTime: null, dischargingTime: 5400 },
+  network: { online: true, effectiveType: '4g', saveData: false, rtt: 45, downlink: 9 },
+  screen: { width: 390, height: 844, dpr: 3, orientation: 'portrait' },
+  device: { model: 'Pixel 7', platformVersion: '14', cores: 8, memoryGb: 4 },
+};
+
+const joinSession = async (socket, sessionId) => {
+  const joined = nextUpdate(socket, 'session');
+  socket.send(JSON.stringify({ type: 'join-session', sessionId }));
+  await joined;
+};
+
+test('relays phone status within a session without storing it in the history', async () => {
+  const port = await startRelay();
+  const phone = await connect(port);
+  const laptop = await connect(port);
+  const latecomer = await connect(port);
+
+  const created = nextUpdate(phone, 'session');
+  phone.send(JSON.stringify({ type: 'create-session' }));
+  const { sessionId } = await created;
+  await joinSession(laptop, sessionId);
+
+  const received = nextUpdate(laptop, 'phone-status');
+  phone.send(JSON.stringify(phoneStatusPayload));
+  const status = await received;
+
+  expect(status.type).toBe('phone-status');
+  expect(status.deviceId).toEqual(expect.any(String));
+  expect(status.updatedAt).toBeGreaterThan(1);
+  expect(status.battery).toEqual({ level: 0.62, charging: false, chargingTime: null, dischargingTime: 5400 });
+  expect(status.device).toEqual({ model: 'Pixel 7', platformVersion: '14', cores: 8, memoryGb: 4 });
+
+  const history = nextUpdate(latecomer, 'history');
+  await joinSession(latecomer, sessionId);
+  expect((await history).items.some((item) => item.type === 'phone-status')).toBe(false);
+});
+
+test('closes the connection when a phone status payload is malformed', async () => {
+  const port = await startRelay();
+  const phone = await connect(port);
+
+  const created = nextUpdate(phone, 'session');
+  phone.send(JSON.stringify({ type: 'create-session' }));
+  await created;
+
+  const closed = once(phone, 'close');
+  phone.send(JSON.stringify({
+    ...phoneStatusPayload,
+    screen: { width: 0, height: 844, dpr: 3, orientation: 'portrait' },
+  }));
+  await closed;
+
+  expect(phone.readyState).toBe(3);
+});
+
+test('drops battery details that do not validate instead of the whole status', async () => {
+  const port = await startRelay();
+  const phone = await connect(port);
+  const laptop = await connect(port);
+
+  const created = nextUpdate(phone, 'session');
+  phone.send(JSON.stringify({ type: 'create-session' }));
+  const { sessionId } = await created;
+  await joinSession(laptop, sessionId);
+
+  const received = nextUpdate(laptop, 'phone-status');
+  phone.send(JSON.stringify({
+    ...phoneStatusPayload,
+    battery: { level: 1.4, charging: true, chargingTime: null, dischargingTime: null },
+    device: { ...phoneStatusPayload.device, model: 'x'.repeat(200) },
+  }));
+  const status = await received;
+
+  expect(status.battery).toBeNull();
+  expect(status.device.model).toBeNull();
+});

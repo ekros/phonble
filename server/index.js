@@ -17,6 +17,7 @@ const maxScrollStep = 600;
 const inputLimits = {
   click: { ratePerSecond: 30, burst: 60 },
   scroll: { ratePerSecond: 120, burst: 240 },
+  status: { ratePerSecond: 1, burst: 6 },
 };
 const supportedImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const port = Number(process.env.PORT ?? 3001);
@@ -63,6 +64,79 @@ const getLanAddresses = () => {
 const isUnitCoordinate = (value) =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
 
+const isFiniteNumber = (value) => typeof value === 'number' && Number.isFinite(value);
+
+const readOptionalNumber = (value, max) =>
+  isFiniteNumber(value) && value >= 0 && value <= max ? Math.round(value * 100) / 100 : null;
+
+const readOptionalText = (value, maxLength) =>
+  typeof value === 'string' && value.length > 0 && value.length <= maxLength ? value : null;
+
+const maxStatusDurationSeconds = 60 * 60 * 24 * 30;
+const maxStatusAgeMs = 60 * 60 * 24 * 7;
+
+const sanitizeBattery = (value) => {
+  if (!value || typeof value !== 'object') return null;
+  if (!isUnitCoordinate(value.level) || typeof value.charging !== 'boolean') return null;
+  return {
+    level: Math.round(value.level * 1000) / 1000,
+    charging: value.charging,
+    chargingTime: readOptionalNumber(value.chargingTime, maxStatusDurationSeconds),
+    dischargingTime: readOptionalNumber(value.dischargingTime, maxStatusDurationSeconds),
+  };
+};
+
+// Status snapshots are advisory: sub-fields that fail validation degrade to null instead of
+// dropping the whole message, but a payload without the core shape is rejected outright.
+const sanitizePhoneStatus = (value) => {
+  if (!value || typeof value !== 'object') return null;
+  if (value.visibility !== 'visible' && value.visibility !== 'hidden') return null;
+  const { network, screen } = value;
+  if (!network || typeof network !== 'object' || typeof network.online !== 'boolean') return null;
+  if (!screen || typeof screen !== 'object') return null;
+  if (!isFiniteNumber(screen.width) || screen.width <= 0 || screen.width > 20000) return null;
+  if (!isFiniteNumber(screen.height) || screen.height <= 0 || screen.height > 20000) return null;
+  if (!isFiniteNumber(screen.dpr) || screen.dpr <= 0 || screen.dpr > 10) return null;
+  if (screen.orientation !== 'portrait' && screen.orientation !== 'landscape') return null;
+
+  const device = value.device && typeof value.device === 'object' ? value.device : {};
+  const cores = isFiniteNumber(device.cores) && device.cores > 0 && device.cores <= 1024
+    ? Math.round(device.cores)
+    : null;
+  const now = Date.now();
+  const interactionAt = isFiniteNumber(value.lastInteractionAt)
+    ? Math.min(now, Math.max(now - maxStatusAgeMs, value.lastInteractionAt))
+    : now;
+
+  return {
+    type: 'phone-status',
+    // Every participant measures age against the relay clock, so client clocks never leak in.
+    updatedAt: now,
+    visibility: value.visibility,
+    lastInteractionAt: interactionAt,
+    battery: sanitizeBattery(value.battery),
+    network: {
+      online: network.online,
+      effectiveType: readOptionalText(network.effectiveType, 16),
+      saveData: typeof network.saveData === 'boolean' ? network.saveData : null,
+      rtt: readOptionalNumber(network.rtt, 60000),
+      downlink: readOptionalNumber(network.downlink, 100000),
+    },
+    screen: {
+      width: Math.round(screen.width),
+      height: Math.round(screen.height),
+      dpr: Math.round(screen.dpr * 100) / 100,
+      orientation: screen.orientation,
+    },
+    device: {
+      model: readOptionalText(device.model, 64),
+      platformVersion: readOptionalText(device.platformVersion, 32),
+      cores,
+      memoryGb: readOptionalNumber(device.memoryGb, 4096),
+    },
+  };
+};
+
 const hasInputBudget = (participant, kind) => {
   const limit = inputLimits[kind];
   const bucket = participant.inputBuckets?.[kind];
@@ -79,6 +153,7 @@ const hasInputBudget = (participant, kind) => {
 const createInputBuckets = () => ({
   click: { tokens: inputLimits.click.burst, refilledAt: Date.now() },
   scroll: { tokens: inputLimits.scroll.burst, refilledAt: Date.now() },
+  status: { tokens: inputLimits.status.burst, refilledAt: Date.now() },
 });
 
 const getBase64ByteLength = (data) => {
@@ -297,6 +372,25 @@ export const createRelayServer = () => {
             y: update.y,
             ...(isScroll ? { dy: update.dy } : {}),
           });
+          for (const peer of clients.clients) {
+            if (
+              peer !== client &&
+              peer.readyState === WebSocket.OPEN &&
+              participants.get(peer)?.sessionId === participant.sessionId
+            ) {
+              peer.send(payload);
+            }
+          }
+          return;
+        }
+
+        if (update?.type === 'phone-status') {
+          const participant = participants.get(client);
+          if (!participant?.sessionId) throw new Error('Participant is not in a session');
+          if (!hasInputBudget(participant, 'status')) return;
+          const status = sanitizePhoneStatus(update);
+          if (!status) throw new Error('Invalid phone status');
+          const payload = JSON.stringify({ ...status, deviceId: participant.id });
           for (const peer of clients.clients) {
             if (
               peer !== client &&

@@ -74,6 +74,10 @@ UI:
 
 - when the cursor is in the remote phone we can scroll and click things inside the webapp context.
 
+## 0.8 in-browser Phone status info
+
+- When connected, we display some info in the phone placeholder, simulating the real location where it appears. For example, battery i the top-right corner.
+
 ## 0.8 Clipboard API
 
 - Uses clipboardchange to autodetect changes in clipboard. The item is automatically sent if supported.
