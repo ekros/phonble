@@ -21,6 +21,7 @@ import {
   startPhoneStatusReporting,
 } from './phoneStatus';
 import { createPointerMessage, createPointerReleaseMessage, isPointerUpdate, toPhonePoint } from './pointerSync';
+import { bytesToBase64, gunzipBase64, gzipBase64 } from './compression';
 import {
   applyRemoteInput,
   createClickInput,
@@ -43,6 +44,7 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
 type SharedUpdate =
   | { type: 'text'; text: string }
   | { type: 'image'; mimeType: string; data: string };
+type CompressedImageUpdate = { type: 'compressed-image'; mimeType: string; data: string };
 type HistoryItem = SharedUpdate & { id: string; deviceName: string; timestamp: number };
 type Participant = { id: string; name: string };
 type ParticipantUpdate = { type: 'participants'; deviceId: string; participants: Participant[] };
@@ -234,6 +236,23 @@ const isSharedUpdate = (value: unknown): value is SharedUpdate => {
   }
 
   return false;
+};
+
+const isCompressedImageUpdate = (value: unknown): value is CompressedImageUpdate => {
+  if (!value || typeof value !== 'object') return false;
+  const update = value as Record<string, unknown>;
+  return update.type === 'compressed-image' && typeof update.mimeType === 'string' && typeof update.data === 'string';
+};
+
+const decodeCompressedImage = async (update: CompressedImageUpdate): Promise<SharedUpdate> => {
+  if (!SUPPORTED_IMAGE_TYPES.has(update.mimeType)) throw new Error('Unsupported compressed image type');
+  const bytes = await gunzipBase64(update.data);
+  if (bytes.length > MAX_IMAGE_BYTES) throw new Error('Compressed image is too large');
+  return {
+    type: 'image',
+    mimeType: update.mimeType,
+    data: bytesToBase64(bytes),
+  };
 };
 
 const fileToBase64 = async (file: File) => {
@@ -462,9 +481,43 @@ const App = () => {
           socket.send(JSON.stringify({ type: 'join-session', sessionId: sessionToJoin }));
         }
       };
-      socket.onmessage = (event) => {
+      socket.onmessage = async (event) => {
         try {
           const update: unknown = JSON.parse(event.data);
+          if (isCompressedImageUpdate(update)) {
+            const decoded = await decodeCompressedImage(update);
+            setSharedItem(decoded);
+            return;
+          }
+          if (update && typeof update === 'object' && (update as Record<string, unknown>).type === 'history') {
+            const historyUpdate = update as { items?: unknown[] };
+            const items = await Promise.all((historyUpdate.items ?? []).map(async (item) => {
+              if (!isCompressedImageUpdate(item)) return item;
+              const decoded = await decodeCompressedImage(item);
+              const metadata = item as Record<string, unknown>;
+              return { ...decoded, id: metadata.id, deviceName: metadata.deviceName, timestamp: metadata.timestamp };
+            }));
+            const normalized = { ...historyUpdate, items };
+            if (isHistoryUpdate(normalized)) setHistory(normalized.items);
+            return;
+          }
+          if (update && typeof update === 'object' && (update as Record<string, unknown>).type === 'history-item') {
+            const historyItemUpdate = update as { item?: unknown; removedIds?: string[] };
+            const item = isCompressedImageUpdate(historyItemUpdate.item)
+              ? await decodeCompressedImage(historyItemUpdate.item).then((decoded) => {
+                  const metadata = historyItemUpdate.item as Record<string, unknown>;
+                  return { ...decoded, id: metadata.id, deviceName: metadata.deviceName, timestamp: metadata.timestamp };
+                })
+              : historyItemUpdate.item;
+            const normalized = { ...historyItemUpdate, item };
+            if (isHistoryItemUpdate(normalized)) {
+              setHistory((items) => [
+                normalized.item,
+                ...items.filter((current) => current.id !== normalized.item.id && !normalized.removedIds.includes(current.id)),
+              ]);
+            }
+            return;
+          }
           if (isSessionUpdate(update)) {
             clearRemoteControl();
             remotePointerRef.current = null;
@@ -749,14 +802,18 @@ const App = () => {
     }
 
     try {
-      const data = await fileToBase64(file);
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const compressedData = await gzipBase64(bytes);
+      const data = compressedData ?? await fileToBase64(file);
       if (socketRef.current?.readyState !== WebSocket.OPEN) {
         setNotice('Disconnected. Your image was not shared.');
         return;
       }
-      const update = { type: 'image', mimeType: file.type, data } satisfies SharedUpdate;
+      const update = compressedData
+        ? { type: 'compressed-image', mimeType: file.type, data }
+        : { type: 'image', mimeType: file.type, data };
       socketRef.current.send(JSON.stringify(update));
-      setSharedItem(update);
+      setSharedItem(compressedData ? { type: 'image', mimeType: file.type, data } : update);
       setNotice('Shared with connected devices.');
     } catch {
       setNotice('Could not read this image.');

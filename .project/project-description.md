@@ -85,10 +85,12 @@ UI:
 ## 0.10 Web Locks API
 
 - Exactly one controller owns the phone (no two devices fighting), multi-tab coordination.
+(not implemented because it broke pointer transfer between participants)
 
 ## 0.11 Notifications
 
 - phone notifications shown as desktop notifications (notifications api, service worker + badging api)
+- Only implement in the webapp if it can send notifications with the screen off. Otherwise, implement only for the mobile app when available.
 
 ## 0.12 Gzip compression
 

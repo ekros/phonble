@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { gunzipSync } from 'node:zlib';
 import { networkInterfaces } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -167,6 +168,15 @@ const getBase64ByteLength = (data) => {
 
   const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
   return (data.length / 4) * 3 - padding;
+};
+
+const decodeBase64 = (data) => {
+  if (typeof data !== 'string' || getBase64ByteLength(data) === null) return null;
+  try {
+    return Buffer.from(data, 'base64');
+  } catch {
+    return null;
+  }
 };
 
 export const createRelayServer = () => {
@@ -416,6 +426,18 @@ export const createRelayServer = () => {
           ) {
             throw new Error('Invalid image update');
           }
+        } else if (update?.type === 'compressed-image') {
+          const compressed = decodeBase64(update.data);
+          if (!supportedImageTypes.has(update.mimeType) || !compressed || compressed.length > maxPayloadBytes) {
+            throw new Error('Invalid compressed image update');
+          }
+          let imageBytes;
+          try {
+            imageBytes = gunzipSync(compressed, { maxOutputLength: maxImageBytes + 1 });
+          } catch {
+            throw new Error('Invalid compressed image update');
+          }
+          if (imageBytes.length > maxImageBytes) throw new Error('Invalid compressed image update');
         } else {
           throw new Error('Invalid shared update');
         }
@@ -425,7 +447,7 @@ export const createRelayServer = () => {
         if (!session) throw new Error('Participant is not in a session');
         session.latestUpdate = update;
         let historyPayload;
-        if (update.type === 'image' || update.text.length > 0) {
+        if (update.type === 'image' || update.type === 'compressed-image' || (update.type === 'text' && update.text.length > 0)) {
           const historyItem = {
             ...update,
             id: randomUUID(),
