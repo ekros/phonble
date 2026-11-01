@@ -80,6 +80,7 @@ h1 { margin: 0; font-family: Georgia, serif; font-size: clamp(42px, 5vw, 66px); 
 .haptics-toggle input:focus-visible { outline: 2px solid #007b64; outline-offset: 2px; }
 .haptics-toggle.unsupported { color: #7a8982; cursor: not-allowed; }
 .haptics-toggle.unsupported input { cursor: not-allowed; }
+.clipboard-autodetect-error { flex-basis: 100%; color: #ae4e38; font-size: 12px; }
 .haptics-arm { min-height: 32px; padding: 0 10px; font-size: 12px; border-color: #b7cbc2; background: #eef5f1; }
 
 .panes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid #bacbc4; border-bottom: 1px solid #bacbc4; }

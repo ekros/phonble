@@ -78,19 +78,19 @@ UI:
 
 - When connected, we display some info in the phone placeholder, simulating the real location where it appears. For example, battery i the top-right corner.
 
-## 0.8 Clipboard API
+## 0.9 Clipboard API
 
-- Uses clipboardchange to autodetect changes in clipboard. The item is automatically sent if supported.
+- Includes an opt-in Clipboard autodetect control with focus/visibility fallback and manual-paste fallback when permission is unavailable.
 
-## 0.9 Web Locks API
+## 0.10 Web Locks API
 
 - Exactly one controller owns the phone (no two devices fighting), multi-tab coordination.
 
-## 0.10 Notifications
+## 0.11 Notifications
 
 - phone notifications shown as desktop notifications (notifications api, service worker + badging api)
 
-## 0.11 Gzip compression
+## 0.12 Gzip compression
 
 - Compression Streams API: Gzip payloads before base64 → the 5 MB image budget goes 3–4× further over the relay.
 

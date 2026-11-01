@@ -57,6 +57,7 @@ type ServerInfoUpdate = { type: 'server-info'; lanAddresses: string[] };
 const SESSION_STORAGE_KEY = 'phonble-session-id';
 const PHONE_WIDTH_STORAGE_KEY = 'phonble-phone-width';
 const HANDOFF_VIBRATION_STORAGE_KEY = 'phonble-handoff-vibration';
+const CLIPBOARD_AUTODETECT_STORAGE_KEY = 'phonble-clipboard-autodetect';
 const SESSION_ID_PATTERN = /^[a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{3}$/;
 const DEFAULT_PHONE_WIDTH = 280;
 const MIN_PHONE_WIDTH = 200;
@@ -133,6 +134,14 @@ const getStoredSessionId = () => {
     return window.localStorage.getItem(SESSION_STORAGE_KEY) ?? '';
   } catch {
     return '';
+  }
+};
+
+const getStoredClipboardAutodetect = () => {
+  try {
+    return window.localStorage.getItem(CLIPBOARD_AUTODETECT_STORAGE_KEY) === 'on';
+  } catch {
+    return false;
   }
 };
 
@@ -256,6 +265,8 @@ const App = () => {
   const [phoneWidth, setPhoneWidth] = useState(getStoredPhoneWidth);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historySearch, setHistorySearch] = useState('');
+  const [clipboardAutodetect, setClipboardAutodetect] = useState(getStoredClipboardAutodetect);
+  const [clipboardAutodetectError, setClipboardAutodetectError] = useState('');
   const [pointerOnPhone, setPointerOnPhone] = useState(false);
   const [remotePointer, setRemotePointer] = useState<{ x: number; y: number; deviceId: string } | null>(null);
   const [handoffVibration, setHandoffVibration] = useState(getStoredHandoffVibrationEnabled);
@@ -278,6 +289,10 @@ const App = () => {
   const participantsRef = useRef<Participant[]>([]);
   const remotePointerRef = useRef<{ deviceId: string; active: boolean } | null>(null);
   const handoffVibrationRef = useRef(handoffVibration);
+  const clipboardReadersRef = useRef<{
+    shareText: (text: string) => void;
+    shareImage: (file: File) => void;
+  } | null>(null);
   const draftBytes = new TextEncoder().encode(draft).length;
   const sharedText = sharedItem.type === 'text' ? sharedItem.text : '';
   const sharedImage = sharedItem.type === 'image' ? sharedItem : null;
@@ -748,6 +763,88 @@ const App = () => {
     }
   };
 
+  clipboardReadersRef.current = { shareText, shareImage };
+
+  useEffect(() => {
+    const clipboard = navigator.clipboard;
+    if (!clipboardAutodetect || connection !== 'connected' || !sessionId || sessionPending) return;
+    if (!clipboard?.readText && !clipboard?.read) {
+      setClipboardAutodetectError('Clipboard autodetect is unavailable in this browser.');
+      return;
+    }
+
+    let active = true;
+    let lastClipboardSignature = '';
+    let readInProgress = false;
+
+    const readClipboard = async () => {
+      if (!active || readInProgress || document.visibilityState === 'hidden' || !document.hasFocus()) return;
+      readInProgress = true;
+      try {
+        let signature = '';
+        let image: File | null = null;
+        if (clipboard.read) {
+          const items = await clipboard.read();
+          for (const item of items) {
+            const imageType = item.types.find((type) => SUPPORTED_IMAGE_TYPES.has(type));
+            if (!imageType) continue;
+            const blob = await item.getType(imageType);
+            signature = `image:${blob.type}:${blob.size}`;
+            image = new File([blob], 'clipboard-image', { type: blob.type });
+            break;
+          }
+        }
+        if (!image && clipboard.readText) {
+          const text = await clipboard.readText();
+          signature = `text:${text}`;
+          if (signature !== lastClipboardSignature && text) {
+            lastClipboardSignature = signature;
+            clipboardReadersRef.current?.shareText(text);
+          }
+          setClipboardAutodetectError('');
+          return;
+        }
+        if (image && signature !== lastClipboardSignature) {
+          lastClipboardSignature = signature;
+          clipboardReadersRef.current?.shareImage(image);
+        }
+        setClipboardAutodetectError('');
+      } catch {
+        if (active) setClipboardAutodetectError('Clipboard permission was denied. Paste manually instead.');
+      } finally {
+        readInProgress = false;
+      }
+    };
+
+    const onClipboardChange = () => void readClipboard();
+    const onFocus = () => void readClipboard();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void readClipboard();
+    };
+    const clipboardTarget = clipboard as Clipboard & EventTarget;
+    clipboardTarget.addEventListener?.('clipboardchange', onClipboardChange);
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    void readClipboard();
+
+    return () => {
+      active = false;
+      clipboardTarget.removeEventListener?.('clipboardchange', onClipboardChange);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [clipboardAutodetect, connection, sessionId, sessionPending]);
+
+  const updateClipboardAutodetect = (enabled: boolean) => {
+    setClipboardAutodetect(enabled);
+    setClipboardAutodetectError('');
+    try {
+      window.localStorage.setItem(CLIPBOARD_AUTODETECT_STORAGE_KEY, enabled ? 'on' : 'off');
+    } catch {
+      setNotice('Clipboard autodetect changed for this page, but could not be saved.');
+    }
+  };
+
   const paste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const imageItem = Array.from(event.clipboardData.items).find((item) => item.kind === 'file');
     if (imageItem) {
@@ -983,6 +1080,18 @@ const App = () => {
               />
               <span>Vibrate on handoff</span>
             </label>
+            <label
+              className={`haptics-toggle${clipboardAutodetectError ? ' unsupported' : ''}`}
+              title="Reads the system clipboard when this page is focused or the clipboard changes. Paste manually if access is denied."
+            >
+              <input
+                type="checkbox"
+                checked={clipboardAutodetect}
+                onChange={(event) => updateClipboardAutodetect(event.target.checked)}
+              />
+              <span>Clipboard autodetect</span>
+            </label>
+            {clipboardAutodetectError ? <span className="clipboard-autodetect-error" role="status">{clipboardAutodetectError}</span> : null}
             {hapticsSupported && !hapticsArmed ? (
               <button
                 type="button"

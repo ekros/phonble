@@ -37,6 +37,7 @@ class MockWebSocket {
 }
 
 const originalWebSocket = globalThis.WebSocket;
+const originalClipboard = navigator.clipboard;
 
 const renderConnected = async () => {
   render(<App />);
@@ -94,6 +95,7 @@ afterEach(() => {
   window.localStorage.clear();
   window.happyDOM.setURL('http://localhost:3000/');
   Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: originalWebSocket });
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: originalClipboard });
   delete (window.navigator as { vibrate?: unknown }).vibrate;
   delete (window.navigator as { userActivation?: unknown }).userActivation;
 });
@@ -495,6 +497,27 @@ test('shares an image dropped into the compose area', async () => {
   await waitFor(() => {
     expect(MockWebSocket.lastInstance?.sent).toContain(JSON.stringify({ type: 'image', mimeType: 'image/png', data: 'AQID' }));
   });
+});
+
+test('autodetects new clipboard text without sharing the same value twice', async () => {
+  const readText = () => Promise.resolve('copied from another app');
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { readText },
+  });
+  Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => true });
+  Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: MockWebSocket });
+  await renderConnected();
+
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Clipboard autodetect' }));
+  await waitFor(() => {
+    expect(MockWebSocket.lastInstance?.sent).toContain(JSON.stringify({ type: 'text', text: 'copied from another app' }));
+  });
+
+  const firstShareCount = MockWebSocket.lastInstance?.sent.filter((message) => message === JSON.stringify({ type: 'text', text: 'copied from another app' })).length;
+  fireEvent(window, new Event('focus'));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(MockWebSocket.lastInstance?.sent.filter((message) => message === JSON.stringify({ type: 'text', text: 'copied from another app' })).length).toBe(firstShareCount);
 });
 
 test('keeps the existing text sharing flow', async () => {
